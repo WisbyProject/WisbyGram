@@ -24,8 +24,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 3. Configura Android SDK
-        uses: android-actions/setup-android@v3
+      - name: 3. Prepara Android SDK e NDK nativo
+        run: |
+          yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;21.4.7075529" "cmake;3.18.1" "platforms;android-34" "build-tools;34.0.0" || true
+          sudo chmod -R 777 $ANDROID_HOME
 
       - name: 4. Applica Modifiche e File Mancanti
         env:
@@ -57,15 +60,21 @@ jobs:
                   "android_client_info": { "package_name": "org.telegram.messenger.beta" }
                 },
                 "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:1234567890:android:1234567892",
+                  "android_client_info": { "package_name": "org.telegram.messenger.web" }
+                },
+                "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
               }
             ],
             "configuration_version": "1"
           }
-          with open("TMessagesProj/google-services.json", "w") as f:
-              json.dump(gs_data, f)
-          if os.path.exists("TMessagesProj_App"):
-              with open("TMessagesProj_App/google-services.json", "w") as f:
-                  json.dump(gs_data, f)
+          for folder in ["TMessagesProj", "TMessagesProj_App", "TMessagesProj_AppStandalone"]:
+              if os.path.exists(folder):
+                  with open(f"{folder}/google-services.json", "w") as f:
+                      json.dump(gs_data, f)
 
           # 1. Crea il file LocalPhotoOverrideManager.java
           manager_path = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
