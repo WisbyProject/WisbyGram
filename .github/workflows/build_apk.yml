@@ -15,45 +15,48 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
-      - name: 2. Installa Java 17
+      - name: 2. Installa Java 17 e Cache
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
-      - name: 3. Installa Android SDK e NDK
+      - name: 3. Cache C++ NDK (Velocizza compilazione)
+        uses: actions/cache@v4
+        with:
+          path: |
+            TMessagesProj/.cxx
+            TMessagesProj/build/intermediates/cxx
+          key: wisby-cxx-arm64-v1
+      - name: 4. Installa Android SDK 36 e NDK 27
         run: |
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "platforms;android-34" "build-tools;36.0.0" "build-tools;35.0.0" "build-tools;34.0.0" "ndk;27.2.12479018" "ndk;21.4.7075529" "cmake;3.22.1" "cmake;3.18.1"
-      - name: 4. Inietta Modifiche Foto Locale
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: 5. Inietta Modifica Foto Locale (Disegno + Galleria)
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
           cat << 'EOF' > patch_wisby.py
-          import os, re, json, glob
-          pkgs = {"org.telegram.messenger", "org.telegram.messenger.beta", "org.telegram.messenger.web", "org.telegram.messenger.regular"}
+          import os, re, glob
           for gf in glob.glob("**/build.gradle", recursive=True):
               c = open(gf, "r", errors="ignore").read()
-              for m in re.findall(r'applicationId\s+["\']([^"\']+)["\']', c):
-                  pkgs.update([m, m + ".beta", m + ".web"])
-              c2 = c.replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", "'arm64-v8a'").replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"')
+              c2 = c.replace("'armeabi-v7a', 'arm64-v8a'", "'arm64-v8a'")
+              c2 = c2.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"')
+              c2 = c2.replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", "'arm64-v8a'")
               if c2 != c: open(gf, "w").write(c2)
-          gs = {"project_info": {"project_number": "1234567890", "firebase_url": "https://telegram.firebaseio.com", "project_id": "telegram-mod", "storage_bucket": "telegram-mod.appspot.com"}, "client": [{"client_info": {"mobilesdk_app_id": f"1:1234567890:android:{1000+i}", "android_client_info": {"package_name": p}}, "api_key": [{"current_key": "AIzaSyDummyKeyForCompilationOnly123456"}]} for i, p in enumerate(sorted(pkgs))], "configuration_version": "1"}
-          for d in glob.glob("TMessagesProj*"):
-              if os.path.isdir(d): json.dump(gs, open(os.path.join(d, "google-services.json"), "w"))
-          aid = re.sub(r"[^0-9]", "", os.environ.get("APP_ID", "")) or "4"
-          ahash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", "")) or "014b35b6184100b085b0d0572f9b5103"
+          aid = re.sub(r"[^0-9]", "", os.environ.get("APP_ID", ""))
+          ahash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", ""))
           bv_p = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
-          if os.path.exists(bv_p):
+          if os.path.exists(bv_p) and aid and ahash:
               bv = open(bv_p).read()
               bv = re.sub(r"APP_ID\s*=\s*[^;]+;", f"APP_ID = {aid};", bv)
               bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{ahash}";', bv)
               open(bv_p, "w").write(bv)
           java_lines = [
               'package org.telegram.messenger;',
-              'import android.app.*; import android.content.*; import android.graphics.*; import android.os.*; import android.view.*; import android.widget.*;',
+              'import android.app.*; import android.content.*; import android.graphics.*; import android.net.Uri; import android.os.*; import android.view.*; import android.widget.*;',
               'import java.io.*; import java.lang.reflect.*; import java.util.concurrent.*;',
               'public class LocalPhotoOverrideManager {',
               '  private static final ConcurrentHashMap<String, Bitmap> cache = new ConcurrentHashMap<>();',
@@ -63,34 +66,53 @@ jobs:
               '  private static Activity act(Context c) { while (c instanceof ContextWrapper) { if (c instanceof Activity) return (Activity)c; c = ((ContextWrapper)c).getBaseContext(); } return null; }',
               '  private static String key(View v) { try { Object m = v.getClass().getMethod("getMessageObject").invoke(v); if (m == null) return null; return m.getClass().getMethod("getDialogId").invoke(m) + "_" + m.getClass().getMethod("getId").invoke(m); } catch (Throwable t) { return null; } }',
               '  private static File file(Context c, String k) { File d = new File(c.getFilesDir(), "wisby_overrides"); if (!d.exists()) d.mkdirs(); return new File(d, k + ".jpg"); }',
-              '  public static void onCellDraw(View v, Canvas c) {',
-              '    String k = key(v); if (k == null) return;',
+              '  private static float[] bounds(View v) {',
+              '    try { Field f = v.getClass().getDeclaredField("photoImage"); f.setAccessible(true); Object ir = f.get(v); float iw = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue(); float ih = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue(); if (iw > 40 && ih > 40) return new float[]{((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue(), ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue(), iw, ih}; } catch (Throwable ignored) {}',
+              '    return new float[]{20f, 10f, Math.max(200f, v.getMeasuredWidth() - 40f), Math.max(200f, v.getMeasuredHeight() - 20f)};',
+              '  }',
+              '  public static void onCellDraw(Object self, Canvas c) {',
+              '    if (!(self instanceof View) || !self.getClass().getSimpleName().equals("ChatMessageCell")) return;',
+              '    View v = (View) self; String k = key(v); if (k == null) return;',
               '    Bitmap b = cache.get(k);',
               '    if (b == null && !Boolean.TRUE.equals(empty.get(k))) { File f = file(v.getContext(), k); if (f.exists()) b = BitmapFactory.decodeFile(f.getAbsolutePath()); if (b != null) cache.put(k, b); else empty.put(k, true); }',
-              '    if (b == null) return;',
-              '    float x = 20, y = 10, w = v.getMeasuredWidth() - 40, hh = v.getMeasuredHeight() - 20;',
-              '    try { Field f = v.getClass().getDeclaredField("photoImage"); f.setAccessible(true); Object ir = f.get(v); float iw = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue(); float ih = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue(); if (iw > 40 && ih > 40) { x = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue(); y = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue(); w = iw; hh = ih; } } catch (Throwable ignored) {}',
-              '    c.drawBitmap(b, null, new RectF(x, y, x + w, y + hh), null);',
+              '    if (b == null || b.isRecycled()) return;',
+              '    float[] r = bounds(v); c.drawBitmap(b, null, new RectF(r[0], r[1], r[0] + r[2], r[1] + r[3]), null);',
               '  }',
-              '  public static void onCellTouch(final View v, MotionEvent e) {',
-              '    int a = e.getActionMasked();',
-              '    if (a == MotionEvent.ACTION_DOWN) { dx = e.getX(); dy = e.getY(); if (lpRun != null) h.removeCallbacks(lpRun); lpRun = () -> { String k = key(v); if (k != null && v.getMeasuredHeight() > 120) openEditor(v, k); }; h.postDelayed(lpRun, 500); }',
+              '  public static void onCellTouch(final Object self, MotionEvent e) {',
+              '    if (!(self instanceof View) || !self.getClass().getSimpleName().equals("ChatMessageCell")) return;',
+              '    final View v = (View) self; int a = e.getActionMasked();',
+              '    if (a == MotionEvent.ACTION_DOWN) { dx = e.getX(); dy = e.getY(); if (lpRun != null) h.removeCallbacks(lpRun); lpRun = () -> { String k = key(v); if (k != null && v.getMeasuredHeight() > 120) showBtn(v, k); }; h.postDelayed(lpRun, 450); }',
               '    else if (a == MotionEvent.ACTION_MOVE && (Math.abs(e.getX() - dx) > 30 || Math.abs(e.getY() - dy) > 30)) { if (lpRun != null) h.removeCallbacks(lpRun); }',
               '    else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) { if (lpRun != null) h.removeCallbacks(lpRun); }',
               '  }',
-              '  private static void openEditor(final View cell, final String k) {',
+              '  private static void showBtn(final View cell, final String k) {',
               '    final Activity a = act(cell.getContext()); if (a == null) return;',
+              '    final ViewGroup dec = (ViewGroup) a.getWindow().getDecorView();',
+              '    View old = dec.findViewWithTag("wisby_btn"); if (old != null) dec.removeView(old);',
+              '    final Button btn = new Button(a); btn.setTag("wisby_btn"); btn.setText("✏️ Modifica Foto (Locale)"); btn.setTextColor(Color.WHITE); btn.setBackgroundColor(0xE61E88E5);',
+              '    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2); lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL; lp.topMargin = 140; dec.addView(btn, lp);',
+              '    final Runnable rem = () -> { if (btn.getParent() != null) dec.removeView(btn); }; h.postDelayed(rem, 4500);',
+              '    btn.setOnClickListener(z -> { h.removeCallbacks(rem); if (btn.getParent() != null) dec.removeView(btn); openEditor(a, cell, k); });',
+              '  }',
+              '  public static class GalFrag extends Fragment {',
+              '    public Bitmap target; public View view;',
+              '    public void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("image/*"); startActivityForResult(Intent.createChooser(i, "Scegli Foto"), 9992); }',
+              '    @Override public void onActivityResult(int req, int res, Intent d) { if (req == 9992 && res == Activity.RESULT_OK && d != null && d.getData() != null && getActivity() != null) { try { InputStream s = getActivity().getContentResolver().openInputStream(d.getData()); Bitmap p = BitmapFactory.decodeStream(s); if (s != null) s.close(); if (p != null && target != null) { new Canvas(target).drawBitmap(p, null, new Rect(0, 0, target.getWidth(), target.getHeight()), null); if (view != null) view.invalidate(); } } catch (Exception ignored) {} } }',
+              '  }',
+              '  private static void openEditor(final Activity a, final View cell, final String k) {',
               '    final Bitmap work = Bitmap.createBitmap(Math.max(300, cell.getWidth()), Math.max(300, cell.getHeight()), Bitmap.Config.ARGB_8888);',
-              '    Canvas sc = new Canvas(work); cell.draw(sc);',
+              '    final Canvas sc = new Canvas(work); cell.draw(sc);',
               '    final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(Color.RED); p.setStrokeWidth(18f); p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND);',
-              '    View dv = new View(a) { float lx, ly; @Override protected void onDraw(Canvas c) { c.drawBitmap(work, null, new Rect(0, 0, getWidth(), getHeight()), null); }',
+              '    final View dv = new View(a) { float lx, ly; @Override protected void onDraw(Canvas c) { c.drawBitmap(work, null, new Rect(0, 0, getWidth(), getHeight()), null); }',
               '      @Override public boolean onTouchEvent(MotionEvent ev) { float x = ev.getX() * work.getWidth() / Math.max(1, getWidth()), y = ev.getY() * work.getHeight() / Math.max(1, getHeight()); if (ev.getAction() == MotionEvent.ACTION_DOWN) { lx = x; ly = y; sc.drawPoint(x, y, p); invalidate(); return true; } else if (ev.getAction() == MotionEvent.ACTION_MOVE) { sc.drawLine(lx, ly, x, y, p); lx = x; ly = y; invalidate(); return true; } return true; } };',
               '    LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL);',
               '    LinearLayout bar = new LinearLayout(a); int[] cols = {Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};',
               '    for (final int col : cols) { Button b = new Button(a); b.setBackgroundColor(col); b.setLayoutParams(new LinearLayout.LayoutParams(0, 100, 1f)); b.setOnClickListener(z -> p.setColor(col)); bar.addView(b); }',
-              '    root.addView(bar); root.addView(dv, new LinearLayout.LayoutParams(-1, 750));',
+              '    Button gb = new Button(a); gb.setText("📁 Sostituisci con Foto dalla Galleria");',
+              '    gb.setOnClickListener(z -> { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} });',
+              '    root.addView(bar); root.addView(gb); root.addView(dv, new LinearLayout.LayoutParams(-1, 700));',
               '    new AlertDialog.Builder(a).setTitle("Modifica Foto (Solo per te)").setView(root)',
-              '      .setPositiveButton("Salva", (d, w) -> { cache.put(k, work); empty.remove(k); try (FileOutputStream o = new FileOutputStream(file(a, k))) { work.compress(Bitmap.CompressFormat.JPEG, 95, o); } catch (Exception ignored) {} cell.invalidate(); })',
+              '      .setPositiveButton("Salva", (d, w) -> { float[] r = bounds(cell); int rx = Math.max(0, Math.min((int)r[0], work.getWidth()-1)), ry = Math.max(0, Math.min((int)r[1], work.getHeight()-1)); int rw = Math.min((int)r[2], work.getWidth()-rx), rh = Math.min((int)r[3], work.getHeight()-ry); Bitmap cropped = (rw > 20 && rh > 20) ? Bitmap.createBitmap(work, rx, ry, rw, rh) : work; cache.put(k, cropped); empty.remove(k); try (FileOutputStream o = new FileOutputStream(file(a, k))) { cropped.compress(Bitmap.CompressFormat.JPEG, 95, o); } catch (Exception ignored) {} cell.invalidate(); })',
               '      .setNeutralButton("Ripristina", (d, w) -> { cache.remove(k); empty.put(k, true); file(a, k).delete(); cell.invalidate(); })',
               '      .setNegativeButton("Annulla", null).show();',
               '  }',
@@ -99,30 +121,28 @@ jobs:
           open("TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java", "w").write("\n".join(java_lines))
           cp = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
           cell = open(cp).read()
-          cell = re.sub(r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{", "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {", cell, count=1)
-          cell = re.sub(r"public\s+boolean\s+onTouchEvent\s*\(\s*MotionEvent\s+event\s*\)\s*\{", "public boolean onTouchEvent(MotionEvent event) { org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event); return onTouchWisby(event); } private boolean onTouchWisby(MotionEvent event) {", cell, count=1)
+          cell = re.sub(r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{", "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {", cell)
+          cell = re.sub(r"public\s+boolean\s+onTouchEvent\s*\(\s*MotionEvent\s+event\s*\)\s*\{", "public boolean onTouchEvent(MotionEvent event) { org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event); ", cell)
           open(cp, "w").write(cell)
           EOF
           python3 patch_wisby.py
-      - name: 5. Configura Keystore e Compila APK
+      - name: 6. Compila APK (Veloce arm64)
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
-          rm -f /tmp/release.keystore
-          keytool -genkey -v -keystore /tmp/release.keystore -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
-          for dir in . TMessagesProj TMessagesProj_App TMessagesProj_AppStandalone; do
-            if [ -d "$dir" ]; then
-              mkdir -p "$dir/config"
-              cp /tmp/release.keystore "$dir/config/release.keystore"
-              cp /tmp/release.keystore "$dir/config/debug.keystore"
-              cp /tmp/release.keystore "$dir/release.keystore"
-            fi
-          done
-          sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
-          printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
-          ./gradlew :TMessagesProj_App:assembleAfatDebug --no-daemon --console=plain || ./gradlew :TMessagesProj:assembleAfatDebug --no-daemon --console=plain
-      - name: 6. Carica APK finito
+          set +e
+          ./gradlew :TMessagesProj_App:assembleAfatDebug -Parm64-v8a -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" --no-daemon --console=plain > build.log 2>&1
+          STATUS=$?
+          if [ $STATUS -ne 0 ]; then
+            echo "### ❌ Errore Esatto:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E -i "error:|exception|failed" -C 2 build.log | tail -n 60 >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 80 build.log
+            exit $STATUS
+          fi
+      - name: 7. Carica APK finito
         uses: actions/upload-artifact@v4
         with:
           name: WisbyGram-APK
