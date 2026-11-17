@@ -8,10 +8,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: 0. Libera spazio su disco del server
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/system-images /opt/ghc /opt/hostedtoolcache/CodeQL
+
       - name: 1. Scarica codice WisbyGram
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 1
 
       - name: 2. Installa Java 17
         uses: actions/setup-java@v4
@@ -22,13 +27,45 @@ jobs:
       - name: 3. Configura Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: 4. Applica Modifiche WisbyGram automaticamente
+      - name: 4. Applica Modifiche e File Mancanti
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
           python3 - << 'EOF'
-          import os, re
+          import os, re, json
+
+          # 0. Crea google-services.json finto (richiesto da Telegram per compilare)
+          gs_data = {
+            "project_info": {
+              "project_number": "1234567890",
+              "firebase_url": "https://telegram.firebaseio.com",
+              "project_id": "telegram-mod",
+              "storage_bucket": "telegram-mod.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:1234567890:android:1234567890",
+                  "android_client_info": { "package_name": "org.telegram.messenger" }
+                },
+                "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:1234567890:android:1234567891",
+                  "android_client_info": { "package_name": "org.telegram.messenger.beta" }
+                },
+                "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
+              }
+            ],
+            "configuration_version": "1"
+          }
+          with open("TMessagesProj/google-services.json", "w") as f:
+              json.dump(gs_data, f)
+          if os.path.exists("TMessagesProj_App"):
+              with open("TMessagesProj_App/google-services.json", "w") as f:
+                  json.dump(gs_data, f)
 
           # 1. Crea il file LocalPhotoOverrideManager.java
           manager_path = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
@@ -157,7 +194,7 @@ jobs:
           bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{app_hash}";', bv)
           with open(bv_path, "w") as f: f.write(bv)
 
-          # 3. Modifica ChatMessageCell.java per mostrare la foto modificata e togliere la sfocatura Stelle
+          # 3. Modifica ChatMessageCell.java
           cell_path = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
           with open(cell_path, "r") as f: cell = f.read()
 
@@ -172,7 +209,7 @@ jobs:
               cell = cell.replace("requestLayout();", override_hook + "\nrequestLayout();", 1)
           with open(cell_path, "w") as f: f.write(cell)
 
-          # 4. Modifica ChatActivity.java per aggiungere la voce "Modifica foto (Locale)" nel menu
+          # 4. Modifica ChatActivity.java
           chat_path = "TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java"
           with open(chat_path, "r") as f: chat = f.read()
 
@@ -210,6 +247,7 @@ jobs:
 
       - name: 5. Crea certificato per installare l'app
         run: |
+          mkdir -p TMessagesProj/config
           rm -f TMessagesProj/config/release.keystore
           keytool -genkey -v -keystore TMessagesProj/config/release.keystore \
             -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 \
@@ -219,11 +257,13 @@ jobs:
       - name: 6. Compila APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleAfatDebug --no-daemon
+          ./gradlew assembleAfatDebug --no-daemon --stacktrace
 
       - name: 7. Carica APK finito
         uses: actions/upload-artifact@v4
         with:
           name: WisbyGram-APK
-          path: TMessagesProj/build/outputs/apk/**/*.apk
-          
+          path: |
+            TMessagesProj/build/outputs/apk/**/*.apk
+            TMessagesProj_App/build/outputs/apk/**/*.apk
+            
