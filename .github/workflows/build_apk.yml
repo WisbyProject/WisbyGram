@@ -18,11 +18,12 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: 2. Installa Java 17
+      - name: 2. Installa Java 17 e Cache Gradle (Velocizza compilazione)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: 3. Prepara Android SDK e NDK nativo
         run: |
@@ -30,15 +31,15 @@ jobs:
           sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;21.4.7075529" "cmake;3.18.1" "platforms;android-34" "build-tools;34.0.0" || true
           sudo chmod -R 777 $ANDROID_HOME
 
-      - name: 4. Applica Modifiche e File Mancanti
+      - name: 4. Applica Modifiche e Configurazione
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
           python3 - << 'EOF'
-          import os, re, json
+          import os, re, json, glob
 
-          # 0. Crea google-services.json finto (richiesto da Telegram per compilare)
+          # 0. Crea google-services.json per tutti i pacchetti possibili
           gs_data = {
             "project_info": {
               "project_number": "1234567890",
@@ -49,25 +50,17 @@ jobs:
             "client": [
               {
                 "client_info": {
-                  "mobilesdk_app_id": "1:1234567890:android:1234567890",
-                  "android_client_info": { "package_name": "org.telegram.messenger" }
-                },
-                "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
-              },
-              {
-                "client_info": {
-                  "mobilesdk_app_id": "1:1234567890:android:1234567891",
-                  "android_client_info": { "package_name": "org.telegram.messenger.beta" }
-                },
-                "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
-              },
-              {
-                "client_info": {
-                  "mobilesdk_app_id": "1:1234567890:android:1234567892",
-                  "android_client_info": { "package_name": "org.telegram.messenger.web" }
+                  "mobilesdk_app_id": f"1:1234567890:android:123456789{i}",
+                  "android_client_info": { "package_name": pkg }
                 },
                 "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
               }
+              for i, pkg in enumerate([
+                "org.telegram.messenger",
+                "org.telegram.messenger.beta",
+                "org.telegram.messenger.web",
+                "org.telegram.messenger.regular"
+              ])
             ],
             "configuration_version": "1"
           }
@@ -76,7 +69,7 @@ jobs:
                   with open(f"{folder}/google-services.json", "w") as f:
                       json.dump(gs_data, f)
 
-          # 1. Crea il file LocalPhotoOverrideManager.java
+          # 1. Crea LocalPhotoOverrideManager.java (Zero dipendenze esterne fragili)
           manager_path = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
           manager_code = '''package org.telegram.messenger;
 
@@ -147,8 +140,8 @@ jobs:
                       }
                       @Override
                       public boolean onTouchEvent(MotionEvent event) {
-                          float x = event.getX() * ((float) workingBitmap.getWidth() / getWidth());
-                          float y = event.getY() * ((float) workingBitmap.getHeight() / getHeight());
+                          float x = event.getX() * ((float) workingBitmap.getWidth() / Math.max(1, getWidth()));
+                          float y = event.getY() * ((float) workingBitmap.getHeight() / Math.max(1, getHeight()));
                           if (event.getAction() == MotionEvent.ACTION_DOWN) {
                               lastX = x; lastY = y; canvas.drawPoint(x, y, paint); invalidate(); return true;
                           } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
@@ -193,8 +186,10 @@ jobs:
           with open(manager_path, "w") as f:
               f.write(manager_code)
 
-          # 2. Inserisci API ID e API HASH in BuildVars.java
-          app_id = os.environ.get("APP_ID", "").strip() or "4"
+          # 2. Inserisci API ID e API HASH in modo sicuro in BuildVars.java
+          raw_id = os.environ.get("APP_ID", "").strip()
+          app_id = re.sub(r"[^0-9]", "", raw_id)
+          if not app_id: app_id = "4"
           app_hash = os.environ.get("APP_HASH", "").strip() or "014b35b6184100b085b0d0572f9b5103"
 
           bv_path = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
@@ -203,7 +198,7 @@ jobs:
           bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{app_hash}";', bv)
           with open(bv_path, "w") as f: f.write(bv)
 
-          # 3. Modifica ChatMessageCell.java
+          # 3. Modifica solo ChatMessageCell.java (Tieni premuto sulla foto o toccala con doppio tap/menu)
           cell_path = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
           with open(cell_path, "r") as f: cell = f.read()
 
@@ -218,7 +213,7 @@ jobs:
               cell = cell.replace("requestLayout();", override_hook + "\nrequestLayout();", 1)
           with open(cell_path, "w") as f: f.write(cell)
 
-          # 4. Modifica ChatActivity.java
+          # 4. Modifica ChatActivity.java senza usare variabili interne soggette a cambi versione
           chat_path = "TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java"
           with open(chat_path, "r") as f: chat = f.read()
 
@@ -233,20 +228,18 @@ jobs:
 
           action_hook = '''
               if (option == 9991 && selectedObject != null) {
-                  ChatMessageCell targetCell = null;
-                  int count = chatListView.getChildCount();
-                  for (int a = 0; a < count; a++) {
-                      View child = chatListView.getChildAt(a);
-                      if (child instanceof ChatMessageCell) {
-                          ChatMessageCell cell = (ChatMessageCell) child;
-                          if (cell.getMessageObject() != null && cell.getMessageObject().getId() == selectedObject.getId()) {
-                              targetCell = cell;
-                              break;
-                          }
+                  android.graphics.Bitmap bmp = null;
+                  if (org.telegram.messenger.LocalPhotoOverrideManager.hasOverride(selectedObject.getDialogId(), selectedObject.getId())) {
+                      bmp = android.graphics.BitmapFactory.decodeFile(org.telegram.messenger.LocalPhotoOverrideManager.getOverrideFile(selectedObject.getDialogId(), selectedObject.getId()).getAbsolutePath());
+                  } else {
+                      java.io.File orig = org.telegram.messenger.FileLoader.getInstance(currentAccount).getPathToMessage(selectedObject.messageOwner);
+                      if (orig != null && orig.exists()) {
+                          bmp = android.graphics.BitmapFactory.decodeFile(orig.getAbsolutePath());
                       }
                   }
-                  android.graphics.Bitmap bmp = (targetCell != null && targetCell.getPhotoImage() != null) ? targetCell.getPhotoImage().getBitmap() : null;
-                  org.telegram.messenger.LocalPhotoOverrideManager.showQuickDrawDialog(getParentActivity(), bmp, selectedObject.getDialogId(), selectedObject.getId(), () -> updateVisibleRows());
+                  org.telegram.messenger.LocalPhotoOverrideManager.showQuickDrawDialog(getParentActivity(), bmp, selectedObject.getDialogId(), selectedObject.getId(), () -> {
+                      if (chatAdapter != null) chatAdapter.notifyDataSetChanged();
+                  });
                   return;
               }
           '''
@@ -254,25 +247,31 @@ jobs:
           with open(chat_path, "w") as f: f.write(chat)
           EOF
 
-      - name: 5. Crea certificato per installare l'app
+      - name: 5. Configura Keystore universale
         run: |
           mkdir -p TMessagesProj/config
-          rm -f TMessagesProj/config/release.keystore
-          keytool -genkey -v -keystore TMessagesProj/config/release.keystore \
-            -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
-            -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
+          for ks in release.keystore debug.keystore; do
+            rm -f TMessagesProj/config/$ks
+            keytool -genkey -v -keystore TMessagesProj/config/$ks \
+              -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
+          done
+          cat << 'EOP' >> gradle.properties
+          RELEASE_KEY_PASSWORD=android
+          RELEASE_KEY_ALIAS=alias_name
+          RELEASE_STORE_PASSWORD=android
+          org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
+          EOP
 
-      - name: 6. Compila APK
+      - name: 6. Compila APK (Veloce arm64)
         run: |
           chmod +x gradlew
-          ./gradlew assembleAfatDebug --no-daemon --stacktrace
+          ./gradlew :TMessagesProj_App:assembleArm64Debug || ./gradlew assembleArm64Debug || ./gradlew assembleAfatDebug
 
       - name: 7. Carica APK finito
         uses: actions/upload-artifact@v4
         with:
           name: WisbyGram-APK
           path: |
-            TMessagesProj/build/outputs/apk/**/*.apk
-            TMessagesProj_App/build/outputs/apk/**/*.apk
-            
+            **/*.apk
