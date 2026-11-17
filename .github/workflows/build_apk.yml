@@ -1,0 +1,229 @@
+name: Compila WisbyGram APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Scarica codice WisbyGram
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 2. Installa Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Configura Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 4. Applica Modifiche WisbyGram automaticamente
+        env:
+          APP_ID: ${{ secrets.TG_APP_ID }}
+          APP_HASH: ${{ secrets.TG_APP_HASH }}
+        run: |
+          python3 - << 'EOF'
+          import os, re
+
+          # 1. Crea il file LocalPhotoOverrideManager.java
+          manager_path = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
+          manager_code = '''package org.telegram.messenger;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.widget.LinearLayout;
+          import android.widget.Button;
+          import java.io.File;
+          import java.io.FileOutputStream;
+
+          public class LocalPhotoOverrideManager {
+              public interface OnOverrideSavedListener { void onSaved(); }
+
+              private static File getOverrideDir() {
+                  File dir = new File(ApplicationLoader.getFilesDirFixed(), "local_photo_overrides");
+                  if (!dir.exists()) dir.mkdirs();
+                  return dir;
+              }
+
+              public static File getOverrideFile(long dialogId, int messageId) {
+                  return new File(getOverrideDir(), dialogId + "_" + messageId + ".jpg");
+              }
+
+              public static boolean hasOverride(long dialogId, int messageId) {
+                  return getOverrideFile(dialogId, messageId).exists();
+              }
+
+              public static boolean saveOverrideBitmap(long dialogId, int messageId, Bitmap bitmap) {
+                  if (bitmap == null) return false;
+                  try (FileOutputStream out = new FileOutputStream(getOverrideFile(dialogId, messageId))) {
+                      bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out);
+                      return true;
+                  } catch (Exception e) { return false; }
+              }
+
+              public static void clearOverride(long dialogId, int messageId) {
+                  File f = getOverrideFile(dialogId, messageId);
+                  if (f.exists()) f.delete();
+              }
+
+              public static void showQuickDrawDialog(Activity activity, Bitmap baseBitmap, long dialogId, int messageId, OnOverrideSavedListener listener) {
+                  if (activity == null) return;
+                  final Bitmap workingBitmap = (baseBitmap != null)
+                      ? baseBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                      : Bitmap.createBitmap(800, 800, Bitmap.Config.ARGB_8888);
+                  if (baseBitmap == null) workingBitmap.eraseColor(Color.DKGRAY);
+
+                  final Canvas canvas = new Canvas(workingBitmap);
+                  final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  paint.setColor(Color.RED);
+                  paint.setStrokeWidth(16f);
+                  paint.setStyle(Paint.Style.STROKE);
+                  paint.setStrokeCap(Paint.Cap.ROUND);
+
+                  View drawView = new View(activity) {
+                      private float lastX, lastY;
+                      @Override
+                      protected void onDraw(Canvas c) {
+                          super.onDraw(c);
+                          c.drawBitmap(workingBitmap, null, new android.graphics.Rect(0, 0, getWidth(), getHeight()), null);
+                      }
+                      @Override
+                      public boolean onTouchEvent(MotionEvent event) {
+                          float x = event.getX() * ((float) workingBitmap.getWidth() / getWidth());
+                          float y = event.getY() * ((float) workingBitmap.getHeight() / getHeight());
+                          if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                              lastX = x; lastY = y; canvas.drawPoint(x, y, paint); invalidate(); return true;
+                          } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
+                              canvas.drawLine(lastX, lastY, x, y, paint); lastX = x; lastY = y; invalidate(); return true;
+                          }
+                          return super.onTouchEvent(event);
+                      }
+                  };
+
+                  LinearLayout container = new LinearLayout(activity);
+                  container.setOrientation(LinearLayout.VERTICAL);
+                  LinearLayout colorBar = new LinearLayout(activity);
+                  int[] colors = {Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};
+                  for (int col : colors) {
+                      Button btn = new Button(activity);
+                      btn.setBackgroundColor(col);
+                      btn.setLayoutParams(new LinearLayout.LayoutParams(0, 110, 1f));
+                      btn.setOnClickListener(v -> paint.setColor(col));
+                      colorBar.addView(btn);
+                  }
+                  container.addView(colorBar);
+                  container.addView(drawView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 850));
+
+                  new AlertDialog.Builder(activity)
+                      .setTitle("Modifica Foto (Solo per te)")
+                      .setView(container)
+                      .setPositiveButton("Salva", (d, w) -> {
+                          saveOverrideBitmap(dialogId, messageId, workingBitmap);
+                          ImageLoader.getInstance().clearMemory();
+                          if (listener != null) listener.onSaved();
+                      })
+                      .setNeutralButton("Ripristina", (d, w) -> {
+                          clearOverride(dialogId, messageId);
+                          ImageLoader.getInstance().clearMemory();
+                          if (listener != null) listener.onSaved();
+                      })
+                      .setNegativeButton("Annulla", null)
+                      .show();
+              }
+          }
+          '''
+          with open(manager_path, "w") as f:
+              f.write(manager_code)
+
+          # 2. Inserisci API ID e API HASH in BuildVars.java
+          app_id = os.environ.get("APP_ID", "").strip() or "4"
+          app_hash = os.environ.get("APP_HASH", "").strip() or "014b35b6184100b085b0d0572f9b5103"
+
+          bv_path = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
+          with open(bv_path, "r") as f: bv = f.read()
+          bv = re.sub(r"APP_ID\s*=\s*[^;]+;", f"APP_ID = {app_id};", bv)
+          bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{app_hash}";', bv)
+          with open(bv_path, "w") as f: f.write(bv)
+
+          # 3. Modifica ChatMessageCell.java per mostrare la foto modificata e togliere la sfocatura Stelle
+          cell_path = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
+          with open(cell_path, "r") as f: cell = f.read()
+
+          override_hook = '''
+              if (currentMessageObject != null && org.telegram.messenger.LocalPhotoOverrideManager.hasOverride(currentMessageObject.getDialogId(), currentMessageObject.getId())) {
+                  java.io.File lf = org.telegram.messenger.LocalPhotoOverrideManager.getOverrideFile(currentMessageObject.getDialogId(), currentMessageObject.getId());
+                  photoImage.setImage(org.telegram.messenger.ImageLocation.getForPath(lf.getAbsolutePath()), "800_800", null, null, 0, null, currentMessageObject, 0);
+                  currentMessageObject.mediaSpoilerRevealed = true;
+              }
+          '''
+          if "requestLayout();" in cell:
+              cell = cell.replace("requestLayout();", override_hook + "\nrequestLayout();", 1)
+          with open(cell_path, "w") as f: f.write(cell)
+
+          # 4. Modifica ChatActivity.java per aggiungere la voce "Modifica foto (Locale)" nel menu
+          chat_path = "TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java"
+          with open(chat_path, "r") as f: chat = f.read()
+
+          menu_hook = '''
+              if (selectedObject != null) {
+                  items.add("Modifica foto (Locale)");
+                  options.add(9991);
+                  icons.add(R.drawable.msg_edit);
+              }
+          '''
+          chat = chat.replace("if (options.size() == 0) {", menu_hook + "\nif (options.size() == 0) {", 1)
+
+          action_hook = '''
+              if (option == 9991 && selectedObject != null) {
+                  ChatMessageCell targetCell = null;
+                  int count = chatListView.getChildCount();
+                  for (int a = 0; a < count; a++) {
+                      View child = chatListView.getChildAt(a);
+                      if (child instanceof ChatMessageCell) {
+                          ChatMessageCell cell = (ChatMessageCell) child;
+                          if (cell.getMessageObject() != null && cell.getMessageObject().getId() == selectedObject.getId()) {
+                              targetCell = cell;
+                              break;
+                          }
+                      }
+                  }
+                  android.graphics.Bitmap bmp = (targetCell != null && targetCell.getPhotoImage() != null) ? targetCell.getPhotoImage().getBitmap() : null;
+                  org.telegram.messenger.LocalPhotoOverrideManager.showQuickDrawDialog(getParentActivity(), bmp, selectedObject.getDialogId(), selectedObject.getId(), () -> updateVisibleRows());
+                  return;
+              }
+          '''
+          chat = chat.replace("public void processSelectedOption(int option) {", "public void processSelectedOption(int option) {\n" + action_hook, 1)
+          with open(chat_path, "w") as f: f.write(chat)
+          EOF
+
+      - name: 5. Crea certificato per installare l'app
+        run: |
+          rm -f TMessagesProj/config/release.keystore
+          keytool -genkey -v -keystore TMessagesProj/config/release.keystore \
+            -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
+
+      - name: 6. Compila APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleAfatDebug --no-daemon
+
+      - name: 7. Carica APK finito
+        uses: actions/upload-artifact@v4
+        with:
+          name: WisbyGram-APK
+          path: TMessagesProj/build/outputs/apk/**/*.apk
+          
