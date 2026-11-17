@@ -8,9 +8,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 0. Libera spazio su disco del server
+      - name: 0. Libera spazio su disco (rimuove vecchi NDK inutilizzati)
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/system-images /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/lib/android/sdk/ndk/* || true
+          df -h
 
       - name: 1. Scarica codice WisbyGram
         uses: actions/checkout@v4
@@ -25,66 +27,64 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: 3. Prepara Android SDK e NDK nativo
+      - name: 3. Installa esattamente SDK 36, NDK 27 e CMake richiesti da Telegram
         run: |
-          yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;21.4.7075529" "cmake;3.18.1" "platforms;android-34" "build-tools;34.0.0" || true
           sudo chmod -R 777 $ANDROID_HOME
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME \
+            "platform-tools" \
+            "platforms;android-36" \
+            "platforms;android-35" \
+            "platforms;android-34" \
+            "build-tools;36.0.0" \
+            "build-tools;35.0.0" \
+            "build-tools;34.0.0" \
+            "ndk;27.2.12479018" \
+            "ndk;21.4.7075529" \
+            "cmake;3.22.1" \
+            "cmake;3.18.1"
 
-      - name: 4. Applica Modifiche e Ottimizzazione Veloce
+      - name: 4. Inietta Editor Foto Locale (100% Standard Android SDK)
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
           python3 - << 'EOF'
-          import os, re, json, glob
+          import os, re, glob
 
-          # 0. Raccogli tutti i package name dai build.gradle e crea google-services.json ovunque
-          pkgs = {
-              "org.telegram.messenger",
-              "org.telegram.messenger.beta",
-              "org.telegram.messenger.web",
-              "org.telegram.messenger.regular",
-              "org.telegram.messenger.standalone"
-          }
+          # 1. Riduci la RAM massima richiesta da Gradle per evitare crash sul server GitHub
+          if os.path.exists("gradle.properties"):
+              with open("gradle.properties", "r") as f:
+                  gp = f.read()
+              gp = re.sub(r"org\.gradle\.jvmargs=.*", "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8", gp)
+              if "org.gradle.workers.max" not in gp:
+                  gp += "\norg.gradle.workers.max=2\n"
+              with open("gradle.properties", "w") as f:
+                  f.write(gp)
+
+          # 2. Compila solo arm64-v8a per dimezzare i tempi e non esaurire spazio/RAM
           for gf in glob.glob("**/build.gradle", recursive=True):
               with open(gf, "r", errors="ignore") as f:
-                  content = f.read()
-              for m in re.findall(r'applicationId\s+["\']([^"\']+)["\']', content):
-                  pkgs.add(m)
-                  pkgs.add(m + ".beta")
-                  pkgs.add(m + ".web")
-              # Velocizza compilazione C++: compila solo arm64-v8a invece di 4 architetture
-              new_content = content.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"')
-              if new_content != content:
+                  c = f.read()
+              c_new = c.replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", "'arm64-v8a'")
+              c_new = c_new.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"')
+              if c_new != c:
                   with open(gf, "w") as f:
-                      f.write(new_content)
+                      f.write(c_new)
 
-          gs_data = {
-            "project_info": {
-              "project_number": "1234567890",
-              "firebase_url": "https://telegram.firebaseio.com",
-              "project_id": "telegram-mod",
-              "storage_bucket": "telegram-mod.appspot.com"
-            },
-            "client": [
-              {
-                "client_info": {
-                  "mobilesdk_app_id": f"1:1234567890:android:{100000 + i}",
-                  "android_client_info": { "package_name": pkg }
-                },
-                "api_key": [{ "current_key": "AIzaSyDummyKeyForCompilationOnly123456" }]
-              }
-              for i, pkg in enumerate(sorted(pkgs))
-            ],
-            "configuration_version": "1"
-          }
-          for folder in glob.glob("TMessagesProj*"):
-              if os.path.isdir(folder):
-                  with open(os.path.join(folder, "google-services.json"), "w") as f:
-                      json.dump(gs_data, f)
+          # 3. Inserisci API_ID e API_HASH in BuildVars.java (se forniti nei Secrets)
+          raw_id = re.sub(r"[^0-9]", "", os.environ.get("APP_ID", "").strip())
+          raw_hash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", "").strip())
+          bv_path = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
+          if os.path.exists(bv_path) and raw_id and raw_hash:
+              with open(bv_path, "r") as f:
+                  bv = f.read()
+              bv = re.sub(r"APP_ID\s*=\s*[^;]+;", f"APP_ID = {raw_id};", bv)
+              bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{raw_hash}";', bv)
+              with open(bv_path, "w") as f:
+                  f.write(bv)
 
-          # 1. Crea LocalPhotoOverrideManager.java (Disegno + Galleria + Supporto Stelle)
+          # 4. Crea LocalPhotoOverrideManager.java (Zero dipendenze da classi interne di Telegram)
           manager_path = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
           manager_code = '''package org.telegram.messenger;
 
@@ -92,149 +92,247 @@ jobs:
           import android.app.AlertDialog;
           import android.app.Fragment;
           import android.content.Context;
+          import android.content.ContextWrapper;
           import android.content.Intent;
           import android.graphics.Bitmap;
           import android.graphics.BitmapFactory;
           import android.graphics.Canvas;
           import android.graphics.Color;
           import android.graphics.Paint;
+          import android.graphics.Path;
           import android.graphics.Rect;
           import android.graphics.RectF;
           import android.net.Uri;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.Gravity;
           import android.view.MotionEvent;
           import android.view.View;
           import android.view.ViewGroup;
           import android.widget.Button;
+          import android.widget.FrameLayout;
           import android.widget.LinearLayout;
 
           import java.io.File;
           import java.io.FileOutputStream;
           import java.io.InputStream;
+          import java.lang.reflect.Field;
+          import java.lang.reflect.Method;
           import java.util.concurrent.ConcurrentHashMap;
 
           public class LocalPhotoOverrideManager {
-              private static final ConcurrentHashMap<String, Bitmap> memoryOverrides = new ConcurrentHashMap<>();
-              private static final ConcurrentHashMap<String, Bitmap> originalSnapshots = new ConcurrentHashMap<>();
-              private static final ConcurrentHashMap<String, Boolean> missingOverrides = new ConcurrentHashMap<>();
+              private static final ConcurrentHashMap<String, Bitmap> memoryCache = new ConcurrentHashMap<>();
+              private static final ConcurrentHashMap<String, Boolean> noOverrideCache = new ConcurrentHashMap<>();
+              private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+              private static Runnable pendingLongPress;
+              private static float downX, downY;
 
-              private static String key(long dialogId, int messageId) {
-                  return dialogId + "_" + messageId;
-              }
-
-              private static File getOverrideDir(Context context) {
-                  File dir = new File(context.getFilesDir(), "local_photo_overrides");
-                  if (!dir.exists()) dir.mkdirs();
-                  return dir;
-              }
-
-              public static File getOverrideFile(Context context, long dialogId, int messageId) {
-                  return new File(getOverrideDir(context), key(dialogId, messageId) + ".jpg");
-              }
-
-              public static Bitmap getOverrideBitmap(Context context, long dialogId, int messageId) {
-                  String k = key(dialogId, messageId);
-                  Bitmap cached = memoryOverrides.get(k);
-                  if (cached != null && !cached.isRecycled()) return cached;
-                  if (Boolean.TRUE.equals(missingOverrides.get(k))) return null;
-                  if (context == null) return null;
-                  File f = getOverrideFile(context, dialogId, messageId);
-                  if (f.exists()) {
-                      Bitmap diskBmp = BitmapFactory.decodeFile(f.getAbsolutePath());
-                      if (diskBmp != null) {
-                          memoryOverrides.put(k, diskBmp);
-                          return diskBmp;
-                      }
+              private static Activity findActivity(Context ctx) {
+                  while (ctx instanceof ContextWrapper) {
+                      if (ctx instanceof Activity) return (Activity) ctx;
+                      ctx = ((ContextWrapper) ctx).getBaseContext();
                   }
-                  missingOverrides.put(k, Boolean.TRUE);
                   return null;
               }
 
-              public static void saveOverrideBitmap(Context context, long dialogId, int messageId, Bitmap bitmap) {
-                  if (context == null || bitmap == null) return;
-                  String k = key(dialogId, messageId);
-                  Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, false);
-                  memoryOverrides.put(k, copy);
-                  missingOverrides.remove(k);
-                  try (FileOutputStream out = new FileOutputStream(getOverrideFile(context, dialogId, messageId))) {
+              private static String getMessageKey(View cell) {
+                  try {
+                      Method getMsg = cell.getClass().getMethod("getMessageObject");
+                      Object msgObj = getMsg.invoke(cell);
+                      if (msgObj == null) return null;
+                      int msgId = (Integer) msgObj.getClass().getMethod("getId").invoke(msgObj);
+                      long dialogId = (Long) msgObj.getClass().getMethod("getDialogId").invoke(msgObj);
+                      return dialogId + "_" + msgId;
+                  } catch (Throwable t) {
+                      return null;
+                  }
+              }
+
+              private static float[] findImageBounds(View cell) {
+                  float bestX = 0, bestY = 0, bestW = 0, bestH = 0;
+                  try {
+                      Field f = cell.getClass().getDeclaredField("photoImage");
+                      f.setAccessible(true);
+                      Object ir = f.get(cell);
+                      if (ir != null) {
+                          float w = ((Number) ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue();
+                          float h = ((Number) ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();
+                          if (w > 40 && h > 40) {
+                              float x = ((Number) ir.getClass().getMethod("getImageX").invoke(ir)).floatValue();
+                              float y = ((Number) ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();
+                              return new float[]{x, y, w, h};
+                          }
+                      }
+                  } catch (Throwable ignored) {}
+
+                  try {
+                      for (Field f : cell.getClass().getDeclaredFields()) {
+                          f.setAccessible(true);
+                          Object val = f.get(cell);
+                          if (val != null && val.getClass().getSimpleName().equals("ImageReceiver")) {
+                              float w = ((Number) val.getClass().getMethod("getImageWidth").invoke(val)).floatValue();
+                              float h = ((Number) val.getClass().getMethod("getImageHeight").invoke(val)).floatValue();
+                              if (w * h > bestW * bestH && w > 60 && h > 60) {
+                                  bestW = w;
+                                  bestH = h;
+                                  bestX = ((Number) val.getClass().getMethod("getImageX").invoke(val)).floatValue();
+                                  bestY = ((Number) val.getClass().getMethod("getImageY").invoke(val)).floatValue();
+                              }
+                          }
+                      }
+                  } catch (Throwable ignored) {}
+
+                  if (bestW > 60 && bestH > 60) {
+                      return new float[]{bestX, bestY, bestW, bestH};
+                  }
+                  if (cell.getMeasuredWidth() > 120 && cell.getMeasuredHeight() > 120) {
+                      return new float[]{24f, 12f, cell.getMeasuredWidth() - 48f, cell.getMeasuredHeight() - 24f};
+                  }
+                  return null;
+              }
+
+              private static File getFile(Context ctx, String key) {
+                  File dir = new File(ctx.getFilesDir(), "wisby_photo_overrides");
+                  if (!dir.exists()) dir.mkdirs();
+                  return new File(dir, key + ".jpg");
+              }
+
+              public static Bitmap getOverride(Context ctx, String key) {
+                  if (key == null) return null;
+                  Bitmap b = memoryCache.get(key);
+                  if (b != null && !b.isRecycled()) return b;
+                  if (Boolean.TRUE.equals(noOverrideCache.get(key))) return null;
+                  File f = getFile(ctx, key);
+                  if (f.exists()) {
+                      Bitmap disk = BitmapFactory.decodeFile(f.getAbsolutePath());
+                      if (disk != null) {
+                          memoryCache.put(key, disk);
+                          return disk;
+                      }
+                  }
+                  noOverrideCache.put(key, Boolean.TRUE);
+                  return null;
+              }
+
+              public static void saveOverride(Context ctx, String key, Bitmap bmp) {
+                  if (ctx == null || key == null || bmp == null) return;
+                  Bitmap copy = bmp.copy(Bitmap.Config.ARGB_8888, false);
+                  memoryCache.put(key, copy);
+                  noOverrideCache.remove(key);
+                  try (FileOutputStream out = new FileOutputStream(getFile(ctx, key))) {
                       copy.compress(Bitmap.CompressFormat.JPEG, 95, out);
-                      out.flush();
                   } catch (Exception ignored) {}
               }
 
-              public static void clearOverride(Context context, long dialogId, int messageId) {
-                  String k = key(dialogId, messageId);
-                  memoryOverrides.remove(k);
-                  missingOverrides.put(k, Boolean.TRUE);
-                  if (context != null) {
-                      File f = getOverrideFile(context, dialogId, messageId);
+              public static void clearOverride(Context ctx, String key) {
+                  if (key == null) return;
+                  memoryCache.remove(key);
+                  noOverrideCache.put(key, Boolean.TRUE);
+                  if (ctx != null) {
+                      File f = getFile(ctx, key);
                       if (f.exists()) f.delete();
                   }
               }
 
-              public static void onCellDraw(View cell, Canvas canvas, MessageObject msg, ImageReceiver photoImage) {
-                  if (cell == null || canvas == null || msg == null) return;
-                  long dialogId = msg.getDialogId();
-                  int msgId = msg.getId();
-                  String k = key(dialogId, msgId);
+              public static void onCellDraw(View cell, Canvas canvas) {
+                  String key = getMessageKey(cell);
+                  if (key == null) return;
+                  Bitmap over = getOverride(cell.getContext(), key);
+                  if (over == null || over.isRecycled()) return;
+                  float[] b = findImageBounds(cell);
+                  if (b == null) return;
+                  RectF dst = new RectF(b[0], b[1], b[0] + b[2], b[1] + b[3]);
+                  int save = canvas.save();
+                  Path clip = new Path();
+                  clip.addRoundRect(dst, 24f, 24f, Path.Direction.CW);
+                  canvas.clipPath(clip);
+                  canvas.drawBitmap(over, null, dst, null);
+                  canvas.restoreToCount(save);
+              }
 
-                  float x = 0, y = 0, w = 0, h = 0;
-                  if (photoImage != null) {
-                      x = photoImage.getImageX();
-                      y = photoImage.getImageY();
-                      w = photoImage.getImageWidth();
-                      h = photoImage.getImageHeight();
-                      Bitmap orig = photoImage.getBitmap();
-                      if (orig != null && !orig.isRecycled() && !originalSnapshots.containsKey(k)) {
-                          try {
-                              originalSnapshots.put(k, orig.copy(Bitmap.Config.ARGB_8888, false));
-                          } catch (Throwable ignored) {}
+              public static void onCellTouch(final View cell, MotionEvent event) {
+                  int action = event.getActionMasked();
+                  if (action == MotionEvent.ACTION_DOWN) {
+                      downX = event.getX();
+                      downY = event.getY();
+                      if (pendingLongPress != null) mainHandler.removeCallbacks(pendingLongPress);
+                      pendingLongPress = new Runnable() {
+                          @Override
+                          public void run() {
+                              String key = getMessageKey(cell);
+                              float[] bounds = findImageBounds(cell);
+                              if (key != null && bounds != null && cell.getMeasuredHeight() > 140) {
+                                  showFloatingEditButton(cell, key, bounds);
+                              }
+                          }
+                      };
+                      mainHandler.postDelayed(pendingLongPress, 450);
+                  } else if (action == MotionEvent.ACTION_MOVE) {
+                      if (Math.abs(event.getX() - downX) > 30 || Math.abs(event.getY() - downY) > 30) {
+                          if (pendingLongPress != null) mainHandler.removeCallbacks(pendingLongPress);
                       }
-                  }
-
-                  Bitmap overrideBmp = getOverrideBitmap(cell.getContext(), dialogId, msgId);
-                  if (overrideBmp != null && !overrideBmp.isRecycled()) {
-                      if (w <= 10 || h <= 10) {
-                          w = Math.max(200, cell.getMeasuredWidth() - 40);
-                          h = Math.max(200, cell.getMeasuredHeight() - 20);
-                          x = 20;
-                          y = 10;
-                      }
-                      RectF dst = new RectF(x, y, x + w, y + h);
-                      canvas.drawBitmap(overrideBmp, null, dst, null);
+                  } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                      if (pendingLongPress != null) mainHandler.removeCallbacks(pendingLongPress);
                   }
               }
 
-              public static void invalidateAllViews(View v) {
-                  if (v == null) return;
-                  v.invalidate();
-                  if (v instanceof ViewGroup) {
-                      ViewGroup vg = (ViewGroup) v;
-                      int count = vg.getChildCount();
-                      for (int i = 0; i < count; i++) {
-                          invalidateAllViews(vg.getChildAt(i));
+              private static void showFloatingEditButton(final View cell, final String key, final float[] bounds) {
+                  final Activity act = findActivity(cell.getContext());
+                  if (act == null) return;
+                  final ViewGroup decor = (ViewGroup) act.getWindow().getDecorView();
+                  final View old = decor.findViewWithTag("wisby_float_btn");
+                  if (old != null) decor.removeView(old);
+
+                  final Button btn = new Button(act);
+                  btn.setTag("wisby_float_btn");
+                  btn.setText("✏️ Modifica Foto (Locale)");
+                  btn.setTextColor(Color.WHITE);
+                  btn.setBackgroundColor(Color.parseColor("#E61E88E5"));
+                  btn.setPadding(40, 24, 40, 24);
+
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      FrameLayout.LayoutParams.WRAP_CONTENT
+                  );
+                  lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+                  lp.topMargin = 140;
+                  decor.addView(btn, lp);
+
+                  final Runnable autoRemove = new Runnable() {
+                      @Override
+                      public void run() {
+                          if (btn.getParent() != null) decor.removeView(btn);
                       }
-                  }
+                  };
+                  mainHandler.postDelayed(autoRemove, 4500);
+
+                  btn.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          mainHandler.removeCallbacks(autoRemove);
+                          if (btn.getParent() != null) decor.removeView(btn);
+                          openEditor(act, cell, key, bounds);
+                      }
+                  });
               }
 
-              public static class GalleryPickerFragment extends Fragment {
+              public static class GalleryFragment extends Fragment {
                   public Bitmap targetBitmap;
                   public View targetView;
 
-                  public GalleryPickerFragment() {}
-
-                  public void startPick() {
+                  public void pick() {
                       Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
                       intent.setType("image/*");
-                      startActivityForResult(Intent.createChooser(intent, "Scegli Immagine"), 9992);
+                      startActivityForResult(Intent.createChooser(intent, "Scegli Foto"), 9992);
                   }
 
                   @Override
-                  public void onActivityResult(int requestCode, int resultCode, Intent data) {
-                      super.onActivityResult(requestCode, resultCode, data);
-                      if (requestCode == 9992 && resultCode == Activity.RESULT_OK && data != null && data.getData() != null && getActivity() != null) {
+                  public void onActivityResult(int req, int res, Intent data) {
+                      super.onActivityResult(req, res, data);
+                      if (req == 9992 && res == Activity.RESULT_OK && data != null && data.getData() != null && getActivity() != null) {
                           try {
-                              Uri uri = data.getData();
-                              InputStream is = getActivity().getContentResolver().openInputStream(uri);
+                              Uri u = data.getData();
+                              InputStream is = getActivity().getContentResolver().openInputStream(u);
                               Bitmap picked = BitmapFactory.decodeStream(is);
                               if (is != null) is.close();
                               if (picked != null && targetBitmap != null) {
@@ -247,23 +345,31 @@ jobs:
                   }
               }
 
-              public static void openEditorForMessage(final Activity activity, final long dialogId, final int messageId, final View rootView) {
-                  if (activity == null) return;
-                  String k = key(dialogId, messageId);
-                  Bitmap baseBitmap = getOverrideBitmap(activity, dialogId, messageId);
-                  if (baseBitmap == null) {
-                      baseBitmap = originalSnapshots.get(k);
+              private static void openEditor(final Activity act, final View cell, final String key, float[] bounds) {
+                  Bitmap base = getOverride(act, key);
+                  if (base == null) {
+                      try {
+                          int w = Math.max(200, (int) bounds[2]);
+                          int h = Math.max(200, (int) bounds[3]);
+                          Bitmap snap = Bitmap.createBitmap(cell.getWidth(), cell.getHeight(), Bitmap.Config.ARGB_8888);
+                          Canvas sc = new Canvas(snap);
+                          cell.draw(sc);
+                          int x = Math.max(0, Math.min((int) bounds[0], snap.getWidth() - 1));
+                          int y = Math.max(0, Math.min((int) bounds[1], snap.getHeight() - 1));
+                          int cw = Math.min(w, snap.getWidth() - x);
+                          int ch = Math.min(h, snap.getHeight() - y);
+                          if (cw > 20 && ch > 20) {
+                              base = Bitmap.createBitmap(snap, x, y, cw, ch);
+                          }
+                      } catch (Throwable ignored) {}
                   }
 
-                  final Bitmap workingBitmap;
-                  if (baseBitmap != null && !baseBitmap.isRecycled()) {
-                      workingBitmap = baseBitmap.copy(Bitmap.Config.ARGB_8888, true);
-                  } else {
-                      workingBitmap = Bitmap.createBitmap(800, 800, Bitmap.Config.ARGB_8888);
-                      workingBitmap.eraseColor(Color.DKGRAY);
-                  }
+                  final Bitmap working = (base != null && !base.isRecycled())
+                      ? base.copy(Bitmap.Config.ARGB_8888, true)
+                      : Bitmap.createBitmap(800, 800, Bitmap.Config.ARGB_8888);
+                  if (base == null) working.eraseColor(Color.DKGRAY);
 
-                  final Canvas drawCanvas = new Canvas(workingBitmap);
+                  final Canvas drawCanvas = new Canvas(working);
                   final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
                   paint.setColor(Color.RED);
                   paint.setStrokeWidth(18f);
@@ -271,147 +377,27 @@ jobs:
                   paint.setStrokeCap(Paint.Cap.ROUND);
                   paint.setStrokeJoin(Paint.Join.ROUND);
 
-                  final View drawView = new View(activity) {
-                      private float lastX, lastY;
-                      private final Rect dstRect = new Rect();
-
+                  final View drawView = new View(act) {
+                      private float lx, ly;
+                      private final Rect dst = new Rect();
                       @Override
                       protected void onDraw(Canvas c) {
                           super.onDraw(c);
-                          dstRect.set(0, 0, getWidth(), getHeight());
-                          c.drawBitmap(workingBitmap, null, dstRect, null);
+                          dst.set(0, 0, getWidth(), getHeight());
+                          c.drawBitmap(working, null, dst, null);
                       }
-
                       @Override
-                      public boolean onTouchEvent(MotionEvent event) {
-                          float x = event.getX() * ((float) workingBitmap.getWidth() / Math.max(1, getWidth()));
-                          float y = event.getY() * ((float) workingBitmap.getHeight() / Math.max(1, getHeight()));
-                          int action = event.getAction();
-                          if (action == MotionEvent.ACTION_DOWN) {
-                              lastX = x;
-                              lastY = y;
+                      public boolean onTouchEvent(MotionEvent e) {
+                          float x = e.getX() * ((float) working.getWidth() / Math.max(1, getWidth()));
+                          float y = e.getY() * ((float) working.getHeight() / Math.max(1, getHeight()));
+                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                              lx = x; ly = y;
                               drawCanvas.drawPoint(x, y, paint);
                               invalidate();
                               return true;
-                          } else if (action == MotionEvent.ACTION_MOVE) {
-                              drawCanvas.drawLine(lastX, lastY, x, y, paint);
-                              lastX = x;
-                              lastY = y;
+                          } else if (e.getAction() == MotionEvent.ACTION_MOVE) {
+                              drawCanvas.drawLine(lx, ly, x, y, paint);
+                              lx = x; ly = y;
                               invalidate();
                               return true;
-                          }
-                          return super.onTouchEvent(event);
-                      }
-                  };
-
-                  LinearLayout container = new LinearLayout(activity);
-                  container.setOrientation(LinearLayout.VERTICAL);
-
-                  LinearLayout colorBar = new LinearLayout(activity);
-                  colorBar.setOrientation(LinearLayout.HORIZONTAL);
-                  int[] colors = {Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};
-                  for (final int col : colors) {
-                      Button btn = new Button(activity);
-                      btn.setBackgroundColor(col);
-                      btn.setLayoutParams(new LinearLayout.LayoutParams(0, 100, 1f));
-                      btn.setOnClickListener(v -> paint.setColor(col));
-                      colorBar.addView(btn);
-                  }
-
-                  Button galleryBtn = new Button(activity);
-                  galleryBtn.setText("Scegli Foto dalla Galleria");
-                  galleryBtn.setOnClickListener(v -> {
-                      try {
-                          GalleryPickerFragment frag = (GalleryPickerFragment) activity.getFragmentManager().findFragmentByTag("wisby_picker");
-                          if (frag == null) {
-                              frag = new GalleryPickerFragment();
-                              activity.getFragmentManager().beginTransaction().add(frag, "wisby_picker").commitAllowingStateLoss();
-                              activity.getFragmentManager().executePendingTransactions();
-                          }
-                          frag.targetBitmap = workingBitmap;
-                          frag.targetView = drawView;
-                          frag.startPick();
-                      } catch (Exception ignored) {}
-                  });
-
-                  container.addView(colorBar);
-                  container.addView(galleryBtn);
-                  container.addView(drawView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 750));
-
-                  new AlertDialog.Builder(activity)
-                      .setTitle("Modifica Foto (Solo per te)")
-                      .setView(container)
-                      .setPositiveButton("Salva", (d, w) -> {
-                          saveOverrideBitmap(activity, dialogId, messageId, workingBitmap);
-                          invalidateAllViews(rootView);
-                      })
-                      .setNeutralButton("Ripristina", (d, w) -> {
-                          clearOverride(activity, dialogId, messageId);
-                          invalidateAllViews(rootView);
-                      })
-                      .setNegativeButton("Annulla", null)
-                      .show();
-              }
-          }
-          '''
-          with open(manager_path, "w") as f:
-              f.write(manager_code)
-
-          # 2. Inserisci API ID e API HASH in BuildVars.java
-          raw_id = os.environ.get("APP_ID", "").strip()
-          app_id = re.sub(r"[^0-9]", "", raw_id) or "4"
-          app_hash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", "").strip()) or "014b35b6184100b085b0d0572f9b5103"
-
-          bv_path = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
-          with open(bv_path, "r") as f: bv = f.read()
-          bv = re.sub(r"APP_ID\s*=\s*[^;]+;", f"APP_ID = {app_id};", bv)
-          bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{app_hash}";', bv)
-          with open(bv_path, "w") as f: f.write(bv)
-
-          # 3. Modifica ChatMessageCell.java in modo sicuro intercettando onDraw
-          cell_path = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
-          with open(cell_path, "r") as f: cell = f.read()
-
-          ondraw_replacement = '''protected void onDraw(Canvas canvas) {
-              onDrawOriginalWisby(canvas);
-              org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas, currentMessageObject, photoImage);
-          }
-          private void onDrawOriginalWisby(Canvas canvas) {'''
-
-          cell_new, count = re.subn(
-              r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{\s*(?=if\s*\(\s*currentMessageObject\s*==\s*null)",
-              ondraw_replacement + "\n",
-              cell,
-              count=1
-          )
-          if count == 0:
-              cell_new = cell.replace("protected void onDraw(Canvas canvas) {", ondraw_replacement, 1)
-          with open(cell_path, "w") as f: f.write(cell_new)
-          print("ChatMessageCell patched successfully")
-
-          # 4. Modifica ChatActivity.java per aggiungere la voce nel menu
-          chat_path = "TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java"
-          with open(chat_path, "r") as f: chat = f.read()
-
-          menu_hook = '''if (selectedObject != null && options != null && items != null && icons != null) {
-              items.add("Modifica foto (Locale)");
-              options.add(9991);
-              icons.add(org.telegram.messenger.R.drawable.msg_edit);
-          }
-          if (options.size() == 0) {'''
-          chat = chat.replace("if (options.size() == 0) {", menu_hook, 1)
-
-          action_hook = '''public void processSelectedOption(int option) {
-              if (option == 9991 && selectedObject != null) {
-                  org.telegram.messenger.LocalPhotoOverrideManager.openEditorForMessage(getParentActivity(), selectedObject.getDialogId(), selectedObject.getId(), fragmentView);
-                  return;
-              }'''
-          chat = chat.replace("public void processSelectedOption(int option) {", action_hook, 1)
-          with open(chat_path, "w") as f: f.write(chat)
-          print("ChatActivity patched successfully")
-          EOF
-
-      - name: 5. Configura Keystore in tutte le cartelle
-        run: |
-          rm -f /tmp/release.keystore
-          keytool -
+                       
