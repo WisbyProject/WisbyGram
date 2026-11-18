@@ -27,19 +27,27 @@ jobs:
           path: |
             TMessagesProj/.cxx
             TMessagesProj/build/intermediates/cxx
-          key: wisby-cxx-arm64-v4
+          key: wisby-cxx-arm64-v5
       - name: 4. Installa Android SDK 36 e NDK 27
         run: |
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 5. Inietta e Verifica Modifica Foto Locale
+      - name: 5. Inietta Modifica Foto e Correggi XML di Telegram
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
           cat << 'EOF' > patch_wisby.py
           import os, re, json, glob
+
+          # Correggi l'errore formatted="false" nei file XML di Telegram
+          for xf in glob.glob("**/res/values*/*.xml", recursive=True):
+              x = open(xf, "r", errors="ignore").read()
+              x2 = re.sub(r'<string\s+name="([^"]+)"\s*>', r'<string name="\1" formatted="false">', x)
+              if x2 != x:
+                  open(xf, "w").write(x2)
+
           pkgs = {"org.telegram.messenger", "org.telegram.messenger.beta", "org.telegram.messenger.web", "org.telegram.messenger.regular", "org.telegram.messenger.standalone"}
           for gf in glob.glob("**/build.gradle", recursive=True):
               c = open(gf, "r", errors="ignore").read()
@@ -154,7 +162,7 @@ jobs:
           python3 patch_wisby.py
           javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-36/android.jar TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
           rm -f TMessagesProj/src/main/java/org/telegram/messenger/*.class
-          echo "Verifica Java superata al 100%!"
+          echo "Verifica Java e correzione XML superate al 100%!"
       - name: 6. Prepara Keystore e Compila APK
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
@@ -173,11 +181,11 @@ jobs:
           printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
           set +e
-          echo "1/2 Verifica rapida Java e Risorse (1 min)..."
+          echo "1/2 Verifica rapida Java e Risorse XML (1 min)..."
           ./gradlew :TMessagesProj_App:compileAfatDebugJavaWithJavac -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain > build.log 2>&1
           STATUS=$?
           if [ $STATUS -eq 0 ]; then
-            echo "Verifica Java di Telegram superata! 2/2 Compilazione C++ e creazione APK..."
+            echo "Verifica Java e XML superata! 2/2 Compilazione C++ e creazione APK..."
             ./gradlew :TMessagesProj_App:assembleAfatDebug -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain >> build.log 2>&1
             STATUS=$?
           fi
@@ -193,7 +201,7 @@ jobs:
           path: |
             TMessagesProj/.cxx
             TMessagesProj/build/intermediates/cxx
-          key: wisby-cxx-arm64-v4
+          key: wisby-cxx-arm64-v5
       - name: 8. Carica APK finito
         uses: actions/upload-artifact@v4
         with:
