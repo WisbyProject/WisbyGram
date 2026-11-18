@@ -50,7 +50,7 @@ jobs:
           for gf in glob.glob("**/build.gradle", recursive=True):
               c = open(gf, "r", errors="ignore").read()
               for m in re.findall(r'org\.telegram\.[a-zA-Z0-9_.]+', c): pkgs.add(m)
-              c2 = c.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"').replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", '"arm64-v8a"').replace('"armeabi-v7a", "arm64-v8a"', '"arm64-v8a"').replace("'armeabi-v7a', 'arm64-v8a'", '"arm64-v8a"')
+              c2 = c.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"').replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", "'arm64-v8a'").replace('"armeabi-v7a", "arm64-v8a"', '"arm64-v8a"').replace("'armeabi-v7a', 'arm64-v8a'", "'arm64-v8a'")
               if c2 != c: open(gf, "w").write(c2)
           gs = {"project_info": {"project_number": "1234567890", "firebase_url": "https://telegram.firebaseio.com", "project_id": "telegram-mod", "storage_bucket": "telegram-mod.appspot.com"}, "client": [{"client_info": {"mobilesdk_app_id": f"1:1234567890:android:{1000+i}", "android_client_info": {"package_name": p}}, "api_key": [{"current_key": "AIzaSyDummyKeyForCompilationOnly123456"}]} for i, p in enumerate(sorted(pkgs))], "configuration_version": "1"}
           for d in glob.glob("TMessagesProj*"):
@@ -142,10 +142,11 @@ jobs:
               "public boolean onTouchEvent(MotionEvent event) { org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event); ",
               cell
           )
+          open(cp, "w*/") # fix safely
           open(cp, "w").write(cell)
           EOF
           python3 patch_wisby.py
-      - name: 5. Prepara Keystore e Compila APK
+      - name: 5. Prepara Keystore e Compila APK Universale
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
@@ -162,11 +163,12 @@ jobs:
           sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
           printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
-          ./gradlew :TMessagesProj_App:assembleAfatDebug -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain
-      - name: 6. Carica APK finito (Forzato)
+          # Compila in modalità universale standard (genera un APK singolo installabile)
+          ./gradlew :TMessagesProj_App:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj_App:assembleDebug --no-daemon --console=plain
+      - name: 6. Carica APK Universale
         uses: actions/upload-artifact@v4
         with:
-          name: WisbyGram-APK
+          name: WisbyGram-Universal-APK
           path: |
             **/outputs/**/*.apk
 # === FINE FILE ===
