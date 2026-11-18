@@ -26,7 +26,7 @@ jobs:
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 4. Inietta Modifica Foto e Correzioni Telegram
+      - name: 4. Inietta Modifica Foto Persistente
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
@@ -71,17 +71,17 @@ jobs:
               '  private static Activity act(Context c) { while (c instanceof ContextWrapper) { if (c instanceof Activity) return (Activity)c; c = ((ContextWrapper)c).getBaseContext(); } return null; }',
               '  private static String key(View v) { try { Object m = v.getClass().getMethod("getMessageObject").invoke(v); if (m == null) return null; return String.valueOf(m.getClass().getMethod("getDialogId").invoke(m)) + "_" + String.valueOf(m.getClass().getMethod("getId").invoke(m)); } catch (Throwable t) { return null; } }',
               '  private static File file(Context c, String k) { File d = new File(c.getFilesDir(), "wisby_overrides"); if (!d.exists()) d.mkdirs(); return new File(d, k + ".jpg"); }',
-              '  private static float[] bounds(View v) {',
-              '    try { Field f = v.getClass().getDeclaredField("photoImage"); f.setAccessible(true); Object ir = f.get(v); float iw = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue(); float ih = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue(); if (iw > 40f && ih > 40f) return new float[]{((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue(), ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue(), iw, ih}; } catch (Throwable ignored) {}',
-              '    return new float[]{20f, 10f, Math.max(200f, v.getMeasuredWidth() - 40f), Math.max(200f, v.getMeasuredHeight() - 20f)};',
+              '  private static void applyBitmap(View v, Bitmap b) {',
+              '    try { Field f = v.getClass().getDeclaredField("photoImage"); f.setAccessible(true); Object ir = f.get(v);',
+              '      if (ir != null) { try { ir.getClass().getMethod("setImageBitmap", Bitmap.class).invoke(ir, b); } catch (Throwable t1) { ir.getClass().getMethod("setImage", Object.class, String.class, android.graphics.drawable.Drawable.class, String.class, Object.class, int.class).invoke(ir, b, "jpg", null, null, null, 0); } }',
+              '    } catch (Throwable ignored) {}',
               '  }',
               '  public static void onCellDraw(Object self, Canvas c) {',
               '    if (!(self instanceof View) || !self.getClass().getSimpleName().equals("ChatMessageCell")) return;',
               '    View v = (View) self; String k = key(v); if (k == null) return;',
               '    Bitmap b = cache.get(k);',
               '    if (b == null && !Boolean.TRUE.equals(empty.get(k))) { File f = file(v.getContext(), k); if (f.exists()) b = BitmapFactory.decodeFile(f.getAbsolutePath()); if (b != null) cache.put(k, b); else empty.put(k, Boolean.TRUE); }',
-              '    if (b == null || b.isRecycled()) return;',
-              '    float[] r = bounds(v); c.drawBitmap(b, null, new RectF(r[0], r[1], r[0] + r[2], r[1] + r[3]), null);',
+              '    if (b != null && !b.isRecycled()) { applyBitmap(v, b); }',
               '  }',
               '  public static void onCellTouch(final Object self, MotionEvent e) {',
               '    if (!(self instanceof View) || !self.getClass().getSimpleName().equals("ChatMessageCell")) return;',
@@ -121,7 +121,7 @@ jobs:
               '    gb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} } });',
               '    root.addView(bar); root.addView(gb); root.addView(dv, new LinearLayout.LayoutParams(-1, 700));',
               '    new AlertDialog.Builder(a).setTitle("Modifica Foto (Solo per te)").setView(root)',
-              '      .setPositiveButton("Salva", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { float[] r = bounds(cell); int rx = Math.max(0, Math.min((int)r[0], work.getWidth()-1)), ry = Math.max(0, Math.min((int)r[1], work.getHeight()-1)); int rw = Math.min((int)r[2], work.getWidth()-rx), rh = Math.min((int)r[3], work.getHeight()-ry); Bitmap cropped = (rw > 20 && rh > 20) ? Bitmap.createBitmap(work, rx, ry, rw, rh) : work; cache.put(k, cropped); empty.remove(k); try { FileOutputStream o = new FileOutputStream(file(a, k)); cropped.compress(Bitmap.CompressFormat.JPEG, 95, o); o.close(); } catch (Exception ignored) {} cell.invalidate(); } })',
+              '      .setPositiveButton("Salva", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { Bitmap cropped = work; cache.put(k, cropped); empty.remove(k); try { FileOutputStream o = new FileOutputStream(file(a, k)); cropped.compress(Bitmap.CompressFormat.JPEG, 95, o); o.close(); } catch (Exception ignored) {} applyBitmap(cell, cropped); cell.invalidate(); } })',
               '      .setNeutralButton("Ripristina", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { cache.remove(k); empty.put(k, Boolean.TRUE); file(a, k).delete(); cell.invalidate(); } })',
               '      .setNegativeButton("Annulla", null).show();',
               '  }',
@@ -133,7 +133,7 @@ jobs:
           cell = open(cp).read()
           cell = re.sub(
               r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{\s*(?=if\s*\(\s*currentMessageObject\s*==\s*null)",
-              "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {\n",
+              "protected void onDraw(Canvas canvas) { org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); onDrawWisby(canvas); } private void onDrawWisby(Canvas canvas) {\n",
               cell,
               count=1
           )
@@ -169,4 +169,4 @@ jobs:
           name: WisbyGram-Universal-APK
           path: |
             **/outputs/**/*.apk
-# === FINE FILE
+# === FINE FILE ===
