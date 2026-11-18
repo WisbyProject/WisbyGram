@@ -142,7 +142,6 @@ jobs:
               "public boolean onTouchEvent(MotionEvent event) { org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event); ",
               cell
           )
-          open(cp, "w*/") # fix safely
           open(cp, "w").write(cell)
           EOF
           python3 patch_wisby.py
@@ -163,7 +162,6 @@ jobs:
           sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
           printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
-          # Compila in modalità universale standard (genera un APK singolo installabile)
           ./gradlew :TMessagesProj_App:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj_App:assembleDebug --no-daemon --console=plain
       - name: 6. Carica APK Universale
         uses: actions/upload-artifact@v4
@@ -171,4 +169,4 @@ jobs:
           name: WisbyGram-Universal-APK
           path: |
             **/outputs/**/*.apk
-# === FINE FILE ===
+# === FINE FILE
