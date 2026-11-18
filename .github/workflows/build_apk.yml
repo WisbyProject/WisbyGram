@@ -25,7 +25,7 @@ jobs:
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 4. Inietta Allineamento Perfetto ImageReceiver e Stelle
+      - name: 4. Inietta Modifica Foto (Escludi Reazioni ed Emoji)
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
@@ -76,15 +76,36 @@ jobs:
             public static void onStart(Object s) { if (cls(s) != null) { cur = (View)s; if (hasAny(cur)) unspoil(cur); } }
             public static void onEnd(Object s) { if (cur == s) cur = null; }
             public static boolean skip(Object s) { return cls(s) != null && hasAny((View)s); }
+            static List<Object> getValidPhotoReceivers(View v) {
+              List<Object> res = new ArrayList<Object>();
+              Class<?> cc = cls(v); if (cc == null) return res;
+              try { Field f = cc.getDeclaredField("photoImage"); f.setAccessible(true); Object o = f.get(v); if (o != null) res.add(o); } catch (Throwable ig) {}
+              for (Field f : cc.getDeclaredFields()) {
+                String n = f.getName().toLowerCase();
+                if (n.contains("photo") || n.contains("media") || n.contains("image") || n.contains("paid") || n.contains("star")) {
+                  if (n.contains("avatar") || n.contains("reply") || n.contains("react") || n.contains("emoji") || n.contains("icon") || n.contains("btn") || n.contains("button") || n.contains("thumb") || n.contains("user") || n.contains("webpage") || n.contains("link")) continue;
+                  try {
+                    f.setAccessible(true); Object o = f.get(v); if (o == null) continue;
+                    if ("ImageReceiver".equals(o.getClass().getSimpleName()) && !res.contains(o)) res.add(o);
+                    else if (o instanceof Object[]) { for (Object x : (Object[])o) if (x != null && "ImageReceiver".equals(x.getClass().getSimpleName()) && !res.contains(x)) res.add(x); }
+                    else if (o instanceof List) { for (Object x : (List<?>)o) if (x != null && "ImageReceiver".equals(x.getClass().getSimpleName()) && !res.contains(x)) res.add(x); }
+                  } catch (Throwable ig) {}
+                }
+              }
+              return res;
+            }
             public static void onIrDraw(Object ir, Canvas c) {
               try {
+                View v = cur; if (v == null) return;
                 float w = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue(), h = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();
-                if (w < 65f || h < 65f) return;
-                View v = cur; if (v == null) try { Object p = ir.getClass().getMethod("getParentView").invoke(ir); if (cls(p) != null) v = (View)p; } catch (Throwable ig) {}
-                if (v == null) return;
+                if (w < 180f || h < 180f) return;
+                List<Object> valid = getValidPhotoReceivers(v);
+                if (!valid.contains(ir)) return;
                 float x = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue(), y = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();
-                if (x < 50f && y < 50f && w == h && w < 145f) return;
-                Bitmap b = get(v.getContext(), sKey(v, x, y, w, h)); if (b == null) b = get(v.getContext(), bKey(v)); if (b == null) return;
+                String sk = sKey(v, x, y, w, h);
+                Bitmap b = get(v.getContext(), sk);
+                if (b == null && valid.size() == 1) b = get(v.getContext(), bKey(v));
+                if (b == null) return;
                 RectF d = new RectF(x, y, x+w, y+h); float[] rd = new float[]{18f,18f,18f,18f,18f,18f,18f,18f};
                 try { int[] r4 = (int[])ir.getClass().getMethod("getRoundRadius").invoke(ir); if (r4 != null && r4.length >= 4) rd = new float[]{r4[0],r4[0],r4[1],r4[1],r4[2],r4[2],r4[3],r4[3]}; } catch (Throwable ig) {}
                 c.save(); Path pt = new Path(); pt.addRoundRect(d, rd, Path.Direction.CW); c.clipPath(pt);
@@ -93,18 +114,14 @@ jobs:
               } catch (Throwable ig) {}
             }
             static float[] findB(View v, float tx, float ty) {
-              Class<?> cc = cls(v); float[] best = null; float bd = 1e9f;
-              if (cc != null) for (Field f : cc.getDeclaredFields()) {
-                String n = f.getName().toLowerCase(); if (n.contains("avatar") || n.contains("reply") || n.contains("react") || n.contains("icon") || n.contains("btn")) continue;
-                try { f.setAccessible(true); Object o = f.get(v); if (o == null) continue; List<Object> l = new ArrayList<Object>();
-                  if ("ImageReceiver".equals(o.getClass().getSimpleName())) l.add(o); else if (o instanceof Object[]) l.addAll(Arrays.asList((Object[])o)); else if (o instanceof List) l.addAll((List<?>)o);
-                  for (Object ir : l) { if (ir == null || !"ImageReceiver".equals(ir.getClass().getSimpleName())) continue;
-                    float w = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue(), h = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();
-                    if (w < 65f || h < 65f) continue;
-                    float x = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue(), y = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();
-                    if (tx >= x && tx <= x+w && ty >= y && ty <= y+h) return new float[]{x, y, w, h};
-                    float d = (tx-(x+w*0.5f))*(tx-(x+w*0.5f)) + (ty-(y+h*0.5f))*(ty-(y+h*0.5f)); if (d < bd) { bd = d; best = new float[]{x, y, w, h}; }
-                  }
+              float[] best = null; float bd = 1e9f;
+              for (Object ir : getValidPhotoReceivers(v)) {
+                try {
+                  float w = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue(), h = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();
+                  if (w < 180f || h < 180f) continue;
+                  float x = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue(), y = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();
+                  if (tx >= x && tx <= x+w && ty >= y && ty <= y+h) return new float[]{x, y, w, h};
+                  float d = (tx-(x+w*0.5f))*(tx-(x+w*0.5f)) + (ty-(y+h*0.5f))*(ty-(y+h*0.5f)); if (d < bd) { bd = d; best = new float[]{x, y, w, h}; }
                 } catch (Throwable ig) {}
               }
               return best != null ? best : new float[]{20f, 15f, Math.max(200f, v.getMeasuredWidth()-40f), Math.max(200f, v.getMeasuredHeight()-30f)};
@@ -113,7 +130,7 @@ jobs:
               if (canc || cls(s) == null) return false; final View v = (View)s; int a = e.getActionMasked();
               if (a == 0) {
                 dx = e.getX(); dy = e.getY(); trig = false; if (R != null) H.removeCallbacks(R);
-                R = new Runnable() { public void run() { if (bKey(v) != null && v.getMeasuredHeight() > 90) { trig = true; float[] r = findB(v, dx, dy); String sk = sKey(v, r[0], r[1], r[2], r[3]); try { canc = true; long t = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(t, t, 3, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ig) {} finally { canc = false; } btn(v, sk, r); } } };
+                R = new Runnable() { public void run() { if (bKey(v) != null && v.getMeasuredHeight() > 150) { float[] r = findB(v, dx, dy); if (dx < r[0] || dx > r[0]+r[2] || dy < r[1] || dy > r[1]+r[3]) return; trig = true; String sk = sKey(v, r[0], r[1], r[2], r[3]); try { canc = true; long t = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(t, t, 3, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ig) {} finally { canc = false; } btn(v, sk, r); } } };
                 H.postDelayed(R, 380);
               } else if (a == 2) { if (Math.abs(e.getX()-dx) > 30f || Math.abs(e.getY()-dy) > 30f) if (R != null) H.removeCallbacks(R); if (trig) return true; }
               else if (a == 1 || a == 3) {
