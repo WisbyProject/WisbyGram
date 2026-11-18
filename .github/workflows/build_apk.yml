@@ -6,10 +6,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 0. Libera spazio disco
+      - name: 0. Libera 40GB di spazio disco
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/system-images /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/local/lib/android/sdk/ndk/* || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/system-images /usr/local/lib/android/sdk/ndk/* /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/chromium /opt/az /usr/share/swift || true
+          df -h
       - name: 1. Scarica codice WisbyGram
         uses: actions/checkout@v4
         with:
@@ -21,31 +21,36 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
-      - name: 3. Cache C++ NDK (Velocizza compilazione)
-        uses: actions/cache@v4
+      - name: 3. Ripristina Cache C++ NDK
+        uses: actions/cache/restore@v4
         with:
           path: |
             TMessagesProj/.cxx
             TMessagesProj/build/intermediates/cxx
-          key: wisby-cxx-arm64-v1
+          key: wisby-cxx-arm64-v2
       - name: 4. Installa Android SDK 36 e NDK 27
         run: |
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 5. Inietta Modifica Foto Locale (Disegno + Galleria)
+      - name: 5. Inietta e Verifica Modifica Foto Locale
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
           cat << 'EOF' > patch_wisby.py
-          import os, re, glob
+          import os, re, json, glob
+          pkgs = {"org.telegram.messenger", "org.telegram.messenger.beta", "org.telegram.messenger.web", "org.telegram.messenger.regular", "org.telegram.messenger.standalone"}
           for gf in glob.glob("**/build.gradle", recursive=True):
               c = open(gf, "r", errors="ignore").read()
-              c2 = c.replace("'armeabi-v7a', 'arm64-v8a'", "'arm64-v8a'")
-              c2 = c2.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"')
-              c2 = c2.replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", "'arm64-v8a'")
+              for m in re.findall(r'org\.telegram\.[a-zA-Z0-9_.]+', c):
+                  pkgs.update([m, m + ".beta", m + ".web", m + ".regular"])
+              c2 = re.sub(r"abiFilters\s+[^\n\r;\}]+", "abiFilters 'arm64-v8a'", c)
+              c2 = c2.replace("-w", "-w -g0")
               if c2 != c: open(gf, "w").write(c2)
+          gs = {"project_info": {"project_number": "1234567890", "firebase_url": "https://telegram.firebaseio.com", "project_id": "telegram-mod", "storage_bucket": "telegram-mod.appspot.com"}, "client": [{"client_info": {"mobilesdk_app_id": f"1:1234567890:android:{1000+i}", "android_client_info": {"package_name": p}}, "api_key": [{"current_key": "AIzaSyDummyKeyForCompilationOnly123456"}]} for i, p in enumerate(sorted(pkgs))], "configuration_version": "1"}
+          for d in glob.glob("TMessagesProj*"):
+              if os.path.isdir(d): json.dump(gs, open(os.path.join(d, "google-services.json"), "w"))
           aid = re.sub(r"[^0-9]", "", os.environ.get("APP_ID", ""))
           ahash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", ""))
           bv_p = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
@@ -89,7 +94,7 @@ jobs:
               '    final Activity a = act(cell.getContext()); if (a == null) return;',
               '    final ViewGroup dec = (ViewGroup) a.getWindow().getDecorView();',
               '    View old = dec.findViewWithTag("wisby_btn"); if (old != null) dec.removeView(old);',
-              '    final Button btn = new Button(a); btn.setTag("wisby_btn"); btn.setText("✏️ Modifica Foto (Locale)"); btn.setTextColor(Color.WHITE); btn.setBackgroundColor(0xE61E88E5);',
+              '    final Button btn = new Button(a); btn.setTag("wisby_btn"); btn.setText("Modifica Foto (Locale)"); btn.setTextColor(Color.WHITE); btn.setBackgroundColor(0xE61E88E5);',
               '    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2); lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL; lp.topMargin = 140; dec.addView(btn, lp);',
               '    final Runnable rem = () -> { if (btn.getParent() != null) dec.removeView(btn); }; h.postDelayed(rem, 4500);',
               '    btn.setOnClickListener(z -> { h.removeCallbacks(rem); if (btn.getParent() != null) dec.removeView(btn); openEditor(a, cell, k); });',
@@ -108,7 +113,7 @@ jobs:
               '    LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL);',
               '    LinearLayout bar = new LinearLayout(a); int[] cols = {Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};',
               '    for (final int col : cols) { Button b = new Button(a); b.setBackgroundColor(col); b.setLayoutParams(new LinearLayout.LayoutParams(0, 100, 1f)); b.setOnClickListener(z -> p.setColor(col)); bar.addView(b); }',
-              '    Button gb = new Button(a); gb.setText("📁 Sostituisci con Foto dalla Galleria");',
+              '    Button gb = new Button(a); gb.setText("Sostituisci con Foto dalla Galleria");',
               '    gb.setOnClickListener(z -> { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} });',
               '    root.addView(bar); root.addView(gb); root.addView(dv, new LinearLayout.LayoutParams(-1, 700));',
               '    new AlertDialog.Builder(a).setTitle("Modifica Foto (Solo per te)").setView(root)',
@@ -118,7 +123,8 @@ jobs:
               '  }',
               '}'
           ]
-          open("TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java", "w").write("\n".join(java_lines))
+          mgr_file = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
+          open(mgr_file, "w").write("\n".join(java_lines))
           cp = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
           cell = open(cp).read()
           cell = re.sub(r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{", "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {", cell)
@@ -126,23 +132,43 @@ jobs:
           open(cp, "w").write(cell)
           EOF
           python3 patch_wisby.py
-      - name: 6. Compila APK (Veloce arm64)
+          javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-36/android.jar TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
+          rm -f TMessagesProj/src/main/java/org/telegram/messenger/*.class
+          echo "Verifica Java superata al 100%!"
+      - name: 6. Prepara Keystore e Compila APK
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
+          rm -f /tmp/release.keystore
+          keytool -genkey -v -keystore /tmp/release.keystore -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
+          for dir in . TMessagesProj TMessagesProj_App TMessagesProj_AppStandalone; do
+            if [ -d "$dir" ]; then
+              mkdir -p "$dir/config"
+              cp /tmp/release.keystore "$dir/config/release.keystore"
+              cp /tmp/release.keystore "$dir/config/debug.keystore"
+              cp /tmp/release.keystore "$dir/release.keystore"
+            fi
+          done
+          sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
+          printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
           set +e
-          ./gradlew :TMessagesProj_App:assembleAfatDebug -Parm64-v8a -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" --no-daemon --console=plain > build.log 2>&1
+          ./gradlew :TMessagesProj_App:assembleAfatDebug -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain > build.log 2>&1
           STATUS=$?
           if [ $STATUS -ne 0 ]; then
-            echo "### ❌ Errore Esatto:" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -E -i "error:|exception|failed" -C 2 build.log | tail -n 60 >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 80 build.log
+            echo "=== ERRORE ESATTO ==="
+            grep -E "FAILURE:|What went wrong|Execution failed|error:|Exception" -A 5 build.log | tail -n 35
             exit $STATUS
           fi
-      - name: 7. Carica APK finito
+      - name: 7. Salva Cache C++ NDK
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            TMessagesProj/.cxx
+            TMessagesProj/build/intermediates/cxx
+          key: wisby-cxx-arm64-v2
+      - name: 8. Carica APK finito
         uses: actions/upload-artifact@v4
         with:
           name: WisbyGram-APK
