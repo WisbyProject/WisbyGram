@@ -6,10 +6,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 0. Libera 40GB di spazio disco
+      - name: 0. Libera spazio disco
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/system-images /usr/local/lib/android/sdk/ndk/* /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/chromium /opt/az /usr/share/swift || true
-          df -h
       - name: 1. Scarica codice WisbyGram
         uses: actions/checkout@v4
         with:
@@ -26,12 +25,12 @@ jobs:
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 4. Inietta Modifica Foto Persistente (Normali + Stelle)
+      - name: 4. Configura Gradle e BuildVars
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
-          cat << 'EOF' > patch_wisby.py
+          cat << 'EOF' > patch_base.py
           import os, re, json, glob
           for xf in glob.glob("**/res/values*/*.xml", recursive=True):
               x = open(xf, "r", errors="ignore").read()
@@ -55,192 +54,229 @@ jobs:
           gs = {"project_info": {"project_number": "1234567890", "firebase_url": "https://telegram.firebaseio.com", "project_id": "telegram-mod", "storage_bucket": "telegram-mod.appspot.com"}, "client": [{"client_info": {"mobilesdk_app_id": f"1:1234567890:android:{1000+i}", "android_client_info": {"package_name": p}}, "api_key": [{"current_key": "AIzaSyDummyKeyForCompilationOnly123456"}]} for i, p in enumerate(sorted(pkgs))], "configuration_version": "1"}
           for d in glob.glob("TMessagesProj*"):
               if os.path.isdir(d): json.dump(gs, open(os.path.join(d, "google-services.json"), "w"))
-
-              java_lines = [
-              'package org.telegram.messenger;',
-              'import android.app.Activity; import android.app.AlertDialog; import android.app.Fragment;',
-              'import android.content.Context; import android.content.ContextWrapper; import android.content.DialogInterface; import android.content.Intent;',
-              'import android.graphics.Bitmap; import android.graphics.BitmapFactory; import android.graphics.Canvas; import android.graphics.Color; import android.graphics.Paint; import android.graphics.Path; import android.graphics.Rect; import android.graphics.RectF;',
-              'import android.os.Handler; import android.os.Looper; import android.os.SystemClock;',
-              'import android.view.Gravity; import android.view.MotionEvent; import android.view.View; import android.view.ViewGroup;',
-              'import android.widget.Button; import android.widget.FrameLayout; import android.widget.LinearLayout;',
-              'import java.io.File; import java.io.FileOutputStream; import java.io.InputStream; import java.lang.reflect.Field; import java.util.List; import java.util.concurrent.ConcurrentHashMap;',
-              'public class LocalPhotoOverrideManager {',
-              '  private static final ConcurrentHashMap<String, Bitmap> cache = new ConcurrentHashMap<String, Bitmap>();',
-              '  private static final ConcurrentHashMap<String, Boolean> empty = new ConcurrentHashMap<String, Boolean>();',
-              '  private static final Handler h = new Handler(Looper.getMainLooper());',
-              '  private static Runnable lpRun; private static float dx, dy;',
-              '  private static boolean lpTriggered = false; private static boolean inCancel = false; private static boolean inCapture = false;',
-              '  private static Class<?> cellClass(Object s) { if (!(s instanceof View)) return null; Class<?> c = s.getClass(); while (c != null) { if ("ChatMessageCell".equals(c.getSimpleName())) return c; c = c.getSuperclass(); } return null; }',
-              '  private static Activity act(Context c) { while (c instanceof ContextWrapper) { if (c instanceof Activity) return (Activity)c; c = ((ContextWrapper)c).getBaseContext(); } return null; }',
-              '  private static String key(View v) {',
-              '    try { Object m = v.getClass().getMethod("getMessageObject").invoke(v); if (m == null) return null;',
-              '      return String.valueOf(m.getClass().getMethod("getDialogId").invoke(m)) + "_" + String.valueOf(m.getClass().getMethod("getId").invoke(m));',
-              '    } catch (Throwable t) { return null; }',
-              '  }',
-              '  private static File file(Context c, String k) { File d = new File(c.getFilesDir(), "wisby_overrides"); if (!d.exists()) d.mkdirs(); return new File(d, k + ".jpg"); }',
-              '  private static Bitmap getSaved(View v, String k) {',
-              '    Bitmap b = cache.get(k);',
-              '    if (b == null && !Boolean.TRUE.equals(empty.get(k))) {',
-              '      File f = file(v.getContext(), k);',
-              '      if (f.exists()) b = BitmapFactory.decodeFile(f.getAbsolutePath());',
-              '      if (b != null) cache.put(k, b); else empty.put(k, Boolean.TRUE);',
-              '    }',
-              '    return (b != null && !b.isRecycled()) ? b : null;',
-              '  }',
-              '  private static float[] irBounds(Object ir) {',
-              '    if (ir == null || !"ImageReceiver".equals(ir.getClass().getSimpleName())) return null;',
-              '    try {',
-              '      float iw = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue();',
-              '      float ih = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();',
-              '      if (iw > 55f && ih > 55f) {',
-              '        float ix = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue();',
-              '        float iy = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();',
-              '        return new float[]{ix, iy, iw, ih};',
-              '      }',
-              '    } catch (Throwable ignored) {}',
-              '    return null;',
-              '  }',
-              '  private static float[] bounds(View v) {',
-              '    Class<?> cc = cellClass(v);',
-              '    if (cc != null) {',
-              '      try { Field f = cc.getDeclaredField("photoImage"); f.setAccessible(true); float[] r = irBounds(f.get(v)); if (r != null) return r; } catch (Throwable ignored) {}',
-              '      float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = 0f, maxY = 0f; boolean found = false;',
-              '      Field[] fs = cc.getDeclaredFields();',
-              '      for (int i = 0; i < fs.length; i++) {',
-              '        Field f = fs[i]; String nm = f.getName().toLowerCase();',
-              '        if (nm.contains("avatar") || nm.contains("reply") || nm.contains("reaction") || nm.contains("icon") || nm.contains("thumb") || nm.contains("button")) continue;',
-              '        try { f.setAccessible(true); Object val = f.get(v); if (val == null) continue;',
-              '          float[] r = irBounds(val);',
-              '          if (r != null) { minX = Math.min(minX, r[0]); minY = Math.min(minY, r[1]); maxX = Math.max(maxX, r[0]+r[2]); maxY = Math.max(maxY, r[1]+r[3]); found = true; }',
-              '          else if (val instanceof Object[]) { Object[] arr = (Object[]) val; for (int j = 0; j < arr.length; j++) { float[] r2 = irBounds(arr[j]); if (r2 != null) { minX = Math.min(minX, r2[0]); minY = Math.min(minY, r2[1]); maxX = Math.max(maxX, r2[0]+r2[2]); maxY = Math.max(maxY, r2[1]+r2[3]); found = true; } } }',
-              '          else if (val instanceof List) { List<?> lst = (List<?>) val; for (int j = 0; j < lst.size(); j++) { float[] r2 = irBounds(lst.get(j)); if (r2 != null) { minX = Math.min(minX, r2[0]); minY = Math.min(minY, r2[1]); maxX = Math.max(maxX, r2[0]+r2[2]); maxY = Math.max(maxY, r2[1]+r2[3]); found = true; } } }',
-              '        } catch (Throwable ignored) {}',
-              '      }',
-              '      if (found && (maxX - minX) > 55f && (maxY - minY) > 55f) return new float[]{minX, minY, maxX - minX, maxY - minY};',
-              '    }',
-              '    return new float[]{20f, 15f, Math.max(200f, v.getMeasuredWidth() - 40f), Math.max(200f, v.getMeasuredHeight() - 30f)};',
-              '  }',
-              '  public static void onCellDraw(Object self, Canvas c) {',
-              '    if (inCapture || cellClass(self) == null) return;',
-              '    View v = (View) self; String k = key(v); if (k == null) return;',
-              '    Bitmap b = getSaved(v, k); if (b == null) return;',
-              '    float[] r = bounds(v);',
-              '    RectF dst = new RectF(r[0], r[1], r[0] + r[2], r[1] + r[3]);',
-              '    c.save();',
-              '    Path path = new Path(); path.addRoundRect(dst, 18f, 18f, Path.Direction.CW); c.clipPath(path);',
-              '    Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);',
-              '    c.drawBitmap(b, null, dst, p);',
-              '    c.restore();',
-              '  }',
-              '  public static boolean onCellTouch(final Object self, MotionEvent e) {',
-              '    if (inCancel || cellClass(self) == null) return false;',
-              '    final View v = (View) self; int a = e.getActionMasked();',
-              '    if (a == MotionEvent.ACTION_DOWN) {',
-              '      dx = e.getX(); dy = e.getY(); lpTriggered = false;',
-              '      if (lpRun != null) h.removeCallbacks(lpRun);',
-              '      lpRun = new Runnable() { @Override public void run() {',
-              '        String k = key(v);',
-              '        if (k != null && v.getMeasuredHeight() > 100) {',
-              '          lpTriggered = true;',
-              '          try { inCancel = true; long now = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ignored) {} finally { inCancel = false; }',
-              '          showBtn(v, k);',
-              '        }',
-              '      } };',
-              '      h.postDelayed(lpRun, 400);',
-              '    } else if (a == MotionEvent.ACTION_MOVE) {',
-              '      if (Math.abs(e.getX() - dx) > 30f || Math.abs(e.getY() - dy) > 30f) { if (lpRun != null) h.removeCallbacks(lpRun); }',
-              '      if (lpTriggered) return true;',
-              '    } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {',
-              '      if (lpRun != null) h.removeCallbacks(lpRun);',
-              '      if (lpTriggered) { lpTriggered = false; return true; }',
-              '      if (a == MotionEvent.ACTION_UP) {',
-              '        String k = key(v);',
-              '        if (k != null && getSaved(v, k) != null) {',
-              '          float[] r = bounds(v);',
-              '          if (dx >= r[0] && dx <= r[0] + r[2] && dy >= r[1] && dy <= r[1] + r[3]) {',
-              '            try { inCancel = true; long now = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ignored) {} finally { inCancel = false; }',
-              '            return true;',
-              '          }',
-              '        }',
-              '      }',
-              '    }',
-              '    return false;',
-              '  }',
-              '  private static void showBtn(final View cell, final String k) {',
-              '    final Activity a = act(cell.getContext()); if (a == null) return;',
-              '    final ViewGroup dec = (ViewGroup) a.getWindow().getDecorView();',
-              '    View old = dec.findViewWithTag("wisby_btn"); if (old != null) dec.removeView(old);',
-              '    final Button btn = new Button(a); btn.setTag("wisby_btn"); btn.setText("Modifica Foto (Locale)"); btn.setTextColor(Color.WHITE); btn.setBackgroundColor(0xF01E88E5);',
-              '    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2); lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL; lp.topMargin = 140; dec.addView(btn, lp); btn.bringToFront();',
-              '    final Runnable rem = new Runnable() { @Override public void run() { if (btn.getParent() != null) dec.removeView(btn); } };',
-              '    h.postDelayed(rem, 5500);',
-              '    btn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { h.removeCallbacks(rem); if (btn.getParent() != null) dec.removeView(btn); openEditor(a, cell, k); } });',
-              '  }',
-              '  public static class GalFrag extends Fragment {',
-              '    public Bitmap target; public View view;',
-              '    public void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("image/*"); startActivityForResult(Intent.createChooser(i, "Scegli Foto"), 9992); }',
-              '    @Override public void onActivityResult(int req, int res, Intent d) { if (req == 9992 && res == Activity.RESULT_OK && d != null && d.getData() != null && getActivity() != null) { try { InputStream s = getActivity().getContentResolver().openInputStream(d.getData()); Bitmap p = BitmapFactory.decodeStream(s); if (s != null) s.close(); if (p != null && target != null) { Canvas c = new Canvas(target); c.drawColor(Color.BLACK); c.drawBitmap(p, null, new Rect(0, 0, target.getWidth(), target.getHeight()), new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG)); if (view != null) view.invalidate(); } } catch (Exception ignored) {} } }',
-              '  }',
-              '  private static void openEditor(final Activity a, final View cell, final String k) {',
-              '    final float[] r = bounds(cell);',
-              '    final int rx = Math.max(0, (int) r[0]), ry = Math.max(0, (int) r[1]);',
-              '    final int rw = Math.max(200, (int) r[2]), rh = Math.max(200, (int) r[3]);',
-              '    final Bitmap work = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888);',
-              '    final Canvas sc = new Canvas(work);',
-              '    Bitmap ex = getSaved(cell, k);',
-              '    if (ex != null) { sc.drawBitmap(ex, null, new Rect(0, 0, rw, rh), null); }',
-              '    else { try { inCapture = true; sc.save(); sc.translate(-rx, -ry); cell.draw(sc); sc.restore(); } finally { inCapture = false; } }',
-              '    final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(Color.RED); p.setStrokeWidth(16f); p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND);',
-              '    final View dv = new View(a) { float lx, ly; @Override protected void onDraw(Canvas c) { c.drawBitmap(work, null, new Rect(0, 0, getWidth(), getHeight()), null); }',
-              '      @Override public boolean onTouchEvent(MotionEvent ev) { float x = ev.getX() * work.getWidth() / Math.max(1, getWidth()), y = ev.getY() * work.getHeight() / Math.max(1, getHeight()); if (ev.getAction() == MotionEvent.ACTION_DOWN) { lx = x; ly = y; sc.drawPoint(x, y, p); invalidate(); return true; } else if (ev.getAction() == MotionEvent.ACTION_MOVE) { sc.drawLine(lx, ly, x, y, p); lx = x; ly = y; invalidate(); return true; } return true; } };',
-              '    LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL);',
-              '    LinearLayout bar = new LinearLayout(a); int[] cols = new int[]{Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};',
-              '    for (int i = 0; i < cols.length; i++) { final int col = cols[i]; Button b = new Button(a); b.setBackgroundColor(col); b.setLayoutParams(new LinearLayout.LayoutParams(0, 100, 1f)); b.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { p.setColor(col); } }); bar.addView(b); }',
-              '    Button gb = new Button(a); gb.setText("Sostituisci con Foto dalla Galleria");',
-              '    gb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} } });',
-              '    root.addView(bar); root.addView(gb); root.addView(dv, new LinearLayout.LayoutParams(-1, 700));',
-              '    new AlertDialog.Builder(a).setTitle("Modifica Foto (Solo per te)").setView(root)',
-              '      .setPositiveButton("Salva", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { cache.put(k, work); empty.remove(k); try { FileOutputStream o = new FileOutputStream(file(a, k)); work.compress(Bitmap.CompressFormat.JPEG, 95, o); o.close(); } catch (Exception ignored) {} cell.invalidate(); if (cell.getParent() instanceof View) ((View) cell.getParent()).invalidate(); } })',
-              '      .setNeutralButton("Ripristina", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { cache.remove(k); empty.put(k, Boolean.TRUE); file(a, k).delete(); cell.invalidate(); if (cell.getParent() instanceof View) ((View) cell.getParent()).invalidate(); } })',
-              '      .setNegativeButton("Annulla", null).show();',
-              '  }',
-              '}'
-              ]
-          mgr_file = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
-          open(mgr_file, "w").write("\n".join(java_lines))
+          EOF
+          python3 patch_base.py
+                - name: 5. Inietta Allineamento Perfetto ImageReceiver e Stelle
+        run: |
+          cat << 'EOF' > TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
+          package org.telegram.messenger;
+          import android.app.*; import android.content.*; import android.graphics.*; import android.os.*; import android.view.*; import android.widget.*;
+          import java.io.*; import java.lang.reflect.*; import java.util.*; import java.util.concurrent.*;
+          public class LocalPhotoOverrideManager {
+            private static final ConcurrentHashMap<String, Bitmap> cache = new ConcurrentHashMap<String, Bitmap>();
+            private static final ConcurrentHashMap<String, Boolean> empty = new ConcurrentHashMap<String, Boolean>();
+            private static final Handler h = new Handler(Looper.getMainLooper());
+            private static Runnable lpRun; private static float dx, dy;
+            private static boolean lpTrig = false, inCancel = false;
+            private static View activeCell = null;
+            private static Class<?> cellCls(Object s) { if (!(s instanceof View)) return null; Class<?> c = s.getClass(); while (c != null) { if ("ChatMessageCell".equals(c.getSimpleName())) return c; c = c.getSuperclass(); } return null; }
+            private static Activity act(Context c) { while (c instanceof ContextWrapper) { if (c instanceof Activity) return (Activity)c; c = ((ContextWrapper)c).getBaseContext(); } return null; }
+            private static File file(Context c, String k) { File d = new File(c.getFilesDir(), "wisby_overrides"); if (!d.exists()) d.mkdirs(); return new File(d, k + ".jpg"); }
+            private static String baseKey(View v) {
+              try { Object m = v.getClass().getMethod("getMessageObject").invoke(v); if (m == null) return null;
+                return String.valueOf(m.getClass().getMethod("getDialogId").invoke(m)) + "_" + String.valueOf(m.getClass().getMethod("getId").invoke(m));
+              } catch (Throwable t) { return null; }
+            }
+            private static String slotKey(View v, float ix, float iy, float iw, float ih) {
+              String bk = baseKey(v); if (bk == null) return null;
+              float cw = Math.max(1f, (float) v.getMeasuredWidth());
+              int col = (iw < cw * 0.62f && (ix + iw * 0.5f) > cw * 0.5f) ? 1 : 0;
+              int row = (ih < 450f && iy > 260f) ? Math.min(3, (int)(iy / Math.max(120f, ih))) : 0;
+              return (col == 0 && row == 0) ? bk : (bk + "_" + col + "_" + row);
+            }
+            private static Bitmap getSaved(Context ctx, String k) {
+              if (k == null || ctx == null) return null;
+              Bitmap b = cache.get(k);
+              if (b == null && !Boolean.TRUE.equals(empty.get(k))) {
+                File f = file(ctx, k); if (f.exists()) b = BitmapFactory.decodeFile(f.getAbsolutePath());
+                if (b != null) cache.put(k, b); else empty.put(k, Boolean.TRUE);
+              }
+              return (b != null && !b.isRecycled()) ? b : null;
+            }
+            private static boolean hasAnyOverride(View v) {
+              String bk = baseKey(v); if (bk == null) return false;
+              Context c = v.getContext();
+              if (getSaved(c, bk) != null) return true;
+              for (int col = 0; col <= 1; col++) for (int row = 0; row <= 3; row++) if (getSaved(c, bk + "_" + col + "_" + row) != null) return true;
+              return false;
+            }
+            private static void clearSpoilers(View v) {
+              Class<?> cc = cellCls(v); if (cc == null) return;
+              try {
+                Object m = v.getClass().getMethod("getMessageObject").invoke(v);
+                if (m != null) { try { m.getClass().getField("isMediaSpoilersRevealed").setBoolean(m, true); } catch (Throwable ignored) {} }
+                Field[] fs = cc.getDeclaredFields();
+                for (int i = 0; i < fs.length; i++) {
+                  String fn = fs[i].getName().toLowerCase();
+                  if (fn.contains("spoiler") && fs[i].getType() == boolean.class) { fs[i].setAccessible(true); fs[i].setBoolean(v, false); }
+                }
+              } catch (Throwable ignored) {}
+            }
+            public static void onCellStartDraw(Object self) {
+              if (cellCls(self) == null) return;
+              activeCell = (View) self;
+              if (hasAnyOverride(activeCell)) clearSpoilers(activeCell);
+            }
+            public static void onCellEndDraw(Object self, Canvas c) {
+              if (activeCell == self) activeCell = null;
+            }
+            public static boolean shouldSkipOverlay(Object self) {
+              if (cellCls(self) == null) return false;
+              return hasAnyOverride((View) self);
+            }
+            public static void onReceiverDraw(Object ir, Canvas c) {
+              try {
+                float iw = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue();
+                float ih = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();
+                if (iw < 65f || ih < 65f) return;
+                View cell = activeCell;
+                if (cell == null) { try { Object p = ir.getClass().getMethod("getParentView").invoke(ir); if (cellCls(p) != null) cell = (View) p; } catch (Throwable ignored) {} }
+                if (cell == null) return;
+                float ix = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue();
+                float iy = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();
+                if (ix < 50f && iy < 50f && iw == ih && iw < 145f) return;
+                String sk = slotKey(cell, ix, iy, iw, ih);
+                Bitmap b = getSaved(cell.getContext(), sk);
+                if (b == null) b = getSaved(cell.getContext(), baseKey(cell));
+                if (b == null) return;
+                RectF dst = new RectF(ix, iy, ix + iw, iy + ih);
+                float[] rad = new float[]{18f,18f,18f,18f,18f,18f,18f,18f};
+                try {
+                  int[] r4 = (int[]) ir.getClass().getMethod("getRoundRadius").invoke(ir);
+                  if (r4 != null && r4.length >= 4) rad = new float[]{r4[0],r4[0],r4[1],r4[1],r4[2],r4[2],r4[3],r4[3]};
+                } catch (Throwable ignored) {}
+                c.save();
+                Path path = new Path(); path.addRoundRect(dst, rad, Path.Direction.CW); c.clipPath(path);
+                float scale = Math.max(iw / (float)b.getWidth(), ih / (float)b.getHeight());
+                float sw = b.getWidth() * scale, sh = b.getHeight() * scale;
+                float sx = ix + (iw - sw) * 0.5f, sy = iy + (ih - sh) * 0.5f;
+                c.drawBitmap(b, null, new RectF(sx, sy, sx + sw, sy + sh), new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG));
+                c.restore();
+              } catch (Throwable ignored) {}
+            }
+            private static float[] findTouchedBounds(View v, float tx, float ty) {
+              Class<?> cc = cellCls(v); float[] best = null; float bestDist = Float.MAX_VALUE;
+              if (cc != null) {
+                Field[] fs = cc.getDeclaredFields();
+                for (int i = 0; i < fs.length; i++) {
+                  Field f = fs[i]; String n = f.getName().toLowerCase();
+                  if (n.contains("avatar") || n.contains("reply") || n.contains("react") || n.contains("icon") || n.contains("btn")) continue;
+                  try {
+                    f.setAccessible(true); Object o = f.get(v); if (o == null) continue;
+                    List<Object> list = new ArrayList<Object>();
+                    if ("ImageReceiver".equals(o.getClass().getSimpleName())) list.add(o);
+                    else if (o instanceof Object[]) list.addAll(Arrays.asList((Object[])o));
+                    else if (o instanceof List) list.addAll((List<?>)o);
+                    for (int j = 0; j < list.size(); j++) {
+                      Object ir = list.get(j); if (ir == null || !"ImageReceiver".equals(ir.getClass().getSimpleName())) continue;
+                      float iw = ((Number)ir.getClass().getMethod("getImageWidth").invoke(ir)).floatValue();
+                      float ih = ((Number)ir.getClass().getMethod("getImageHeight").invoke(ir)).floatValue();
+                      if (iw < 65f || ih < 65f) continue;
+                      float ix = ((Number)ir.getClass().getMethod("getImageX").invoke(ir)).floatValue();
+                      float iy = ((Number)ir.getClass().getMethod("getImageY").invoke(ir)).floatValue();
+                      if (tx >= ix && tx <= ix + iw && ty >= iy && ty <= iy + ih) return new float[]{ix, iy, iw, ih};
+                      float cx = ix + iw * 0.5f, cy = iy + ih * 0.5f, d = (tx - cx)*(tx - cx) + (ty - cy)*(ty - cy);
+                      if (d < bestDist) { bestDist = d; best = new float[]{ix, iy, iw, ih}; }
+                    }
+                  } catch (Throwable ignored) {}
+                }
+              }
+              return best != null ? best : new float[]{20f, 15f, Math.max(200f, v.getMeasuredWidth() - 40f), Math.max(200f, v.getMeasuredHeight() - 30f)};
+            }
+            public static boolean onCellTouch(final Object self, MotionEvent e) {
+              if (inCancel || cellCls(self) == null) return false; final View v = (View) self; int a = e.getActionMasked();
+              if (a == MotionEvent.ACTION_DOWN) {
+                dx = e.getX(); dy = e.getY(); lpTrig = false; if (lpRun != null) h.removeCallbacks(lpRun);
+                lpRun = new Runnable() { @Override public void run() {
+                  if (baseKey(v) != null && v.getMeasuredHeight() > 90) {
+                    lpTrig = true;
+                    float[] r = findTouchedBounds(v, dx, dy);
+                    String sk = slotKey(v, r[0], r[1], r[2], r[3]);
+                    try { inCancel = true; long t = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(t, t, MotionEvent.ACTION_CANCEL, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ignored) {} finally { inCancel = false; }
+                    showBtn(v, sk, r);
+                  }
+                } };
+                h.postDelayed(lpRun, 380);
+              } else if (a == MotionEvent.ACTION_MOVE) {
+                if (Math.abs(e.getX() - dx) > 30f || Math.abs(e.getY() - dy) > 30f) { if (lpRun != null) h.removeCallbacks(lpRun); } if (lpTrig) return true;
+              } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                if (lpRun != null) h.removeCallbacks(lpRun); if (lpTrig) { lpTrig = false; return true; }
+                if (a == MotionEvent.ACTION_UP && hasAnyOverride(v)) {
+                  float[] r = findTouchedBounds(v, dx, dy);
+                  if (dx >= r[0] && dx <= r[0] + r[2] && dy >= r[1] && dy <= r[1] + r[3]) {
+                    try { inCancel = true; long t = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(t, t, MotionEvent.ACTION_CANCEL, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ignored) {} finally { inCancel = false; }
+                    return true;
+                  }
+                }
+              }
+              return false;
+            }
+            private static void showBtn(final View cell, final String sk, final float[] r) {
+              final Activity a = act(cell.getContext()); if (a == null) return; final ViewGroup dec = (ViewGroup) a.getWindow().getDecorView();
+              View old = dec.findViewWithTag("wisby_btn"); if (old != null) dec.removeView(old);
+              final Button btn = new Button(a); btn.setTag("wisby_btn"); btn.setText("Modifica Questa Foto"); btn.setTextColor(Color.WHITE); btn.setBackgroundColor(0xF01E88E5);
+              FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2); lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL; lp.topMargin = 140; dec.addView(btn, lp); btn.bringToFront();
+              final Runnable rem = new Runnable() { @Override public void run() { if (btn.getParent() != null) dec.removeView(btn); } }; h.postDelayed(rem, 5500);
+              btn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { h.removeCallbacks(rem); if (btn.getParent() != null) dec.removeView(btn); openEditor(a, cell, sk, r); } });
+            }
+            public static class GalFrag extends Fragment {
+              public Bitmap target; public View view;
+              public void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("image/*"); startActivityForResult(Intent.createChooser(i, "Scegli Foto"), 9992); }
+              @Override public void onActivityResult(int req, int res, Intent d) { if (req == 9992 && res == Activity.RESULT_OK && d != null && d.getData() != null && getActivity() != null) { try { InputStream s = getActivity().getContentResolver().openInputStream(d.getData()); Bitmap p = BitmapFactory.decodeStream(s); if (s != null) s.close(); if (p != null && target != null) { Canvas c = new Canvas(target); c.drawColor(Color.BLACK); float sc = Math.max((float)target.getWidth()/p.getWidth(), (float)target.getHeight()/p.getHeight()); float sw = p.getWidth()*sc, sh = p.getHeight()*sc; c.drawBitmap(p, null, new RectF((target.getWidth()-sw)*0.5f, (target.getHeight()-sh)*0.5f, (target.getWidth()+sw)*0.5f, (target.getHeight()+sh)*0.5f), new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG)); if (view != null) view.invalidate(); } } catch (Exception ignored) {} } }
+            }
+            private static void openEditor(final Activity a, final View cell, final String k, final float[] r) {
+              final int rx = Math.max(0, (int)r[0]), ry = Math.max(0, (int)r[1]), rw = Math.max(200, (int)r[2]), rh = Math.max(200, (int)r[3]);
+              final Bitmap work = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888); final Canvas sc = new Canvas(work); Bitmap ex = getSaved(cell.getContext(), k);
+              if (ex != null) sc.drawBitmap(ex, null, new Rect(0, 0, rw, rh), null); else { sc.save(); sc.translate(-rx, -ry); cell.draw(sc); sc.restore(); }
+              final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(Color.RED); p.setStrokeWidth(14f); p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND);
+              final View dv = new View(a) { float lx, ly; @Override protected void onDraw(Canvas c) { c.drawBitmap(work, null, new Rect(0, 0, getWidth(), getHeight()), null); }
+                @Override public boolean onTouchEvent(MotionEvent ev) { float x = ev.getX() * work.getWidth() / Math.max(1, getWidth()), y = ev.getY() * work.getHeight() / Math.max(1, getHeight()); if (ev.getAction() == MotionEvent.ACTION_DOWN) { lx = x; ly = y; sc.drawPoint(x, y, p); invalidate(); return true; } else if (ev.getAction() == MotionEvent.ACTION_MOVE) { sc.drawLine(lx, ly, x, y, p); lx = x; ly = y; invalidate(); return true; } return true; } };
+              LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL); LinearLayout bar = new LinearLayout(a); int[] cols = new int[]{Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};
+              for (int i = 0; i < cols.length; i++) { final int col = cols[i]; Button b = new Button(a); b.setBackgroundColor(col); b.setLayoutParams(new LinearLayout.LayoutParams(0, 95, 1f)); b.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { p.setColor(col); } }); bar.addView(b); }
+              Button gb = new Button(a); gb.setText("Sostituisci con Foto dalla Galleria");
+              gb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} } });
+              root.addView(bar); root.addView(gb); int dh = Math.min(750, Math.max(350, (int)(700f * rh / Math.max(1, rw)))); root.addView(dv, new LinearLayout.LayoutParams(-1, dh));
+              new AlertDialog.Builder(a).setTitle("Modifica Foto (Allineata)").setView(root)
+                .setPositiveButton("Salva", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { cache.put(k, work); empty.remove(k); try { FileOutputStream o = new FileOutputStream(file(a, k)); work.compress(Bitmap.CompressFormat.JPEG, 95, o); o.close(); } catch (Exception ignored) {} clearSpoilers(cell); cell.invalidate(); if (cell.getParent() instanceof View) ((View) cell.getParent()).invalidate(); } })
+                .setNeutralButton("Ripristina", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { String bk = baseKey(cell); cache.remove(k); empty.put(k, Boolean.TRUE); file(a, k).delete(); if (bk != null) { cache.remove(bk); empty.put(bk, Boolean.TRUE); file(a, bk).delete(); } cell.invalidate(); if (cell.getParent() instanceof View) ((View) cell.getParent()).invalidate(); } })
+                .setNegativeButton("Annulla", null).show();
+            }
+          }
+          EOF
+          python3 -c '
+          import re
+          ir_p = "TMessagesProj/src/main/java/org/telegram/messenger/ImageReceiver.java"
+          ir = open(ir_p).read()
+          ir, n_ir = re.subn(
+              r"public\s+boolean\s+draw\s*\(\s*Canvas\s+canvas\s*\)\s*\{",
+              "public boolean draw(Canvas canvas) { boolean r = drawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onReceiverDraw(this, canvas); return r; } private boolean drawWisby(Canvas canvas) {",
+              ir, count=1
+          )
+          assert n_ir > 0, "ImageReceiver hook failed"
+          open(ir_p, "w").write(ir)
 
           cp = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
           cell = open(cp).read()
-          cell, n_draw = re.subn(
+          cell = re.sub(
               r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{",
-              "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {",
+              "protected void onDraw(Canvas canvas) { org.telegram.messenger.LocalPhotoOverrideManager.onCellStartDraw(this); onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellEndDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {",
               cell
           )
-          cell, n_out = re.subn(
-              r"public\s+void\s+drawOutboundsContent\s*\(\s*Canvas\s+canvas\s*\)\s*\{",
-              "public void drawOutboundsContent(Canvas canvas) { drawOutboundsContentWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void drawOutboundsContentWisby(Canvas canvas) {",
+          cell = re.sub(
+              r"private\s+void\s+drawSpoilers\s*\(\s*Canvas\s+canvas\s*\)\s*\{",
+              "private void drawSpoilers(Canvas canvas) { if (org.telegram.messenger.LocalPhotoOverrideManager.shouldSkipOverlay(this)) return; ",
               cell
           )
-          cell, n_disp = re.subn(
-              r"protected\s+void\s+dispatchDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{",
-              "protected void dispatchDraw(Canvas canvas) { dispatchDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void dispatchDrawWisby(Canvas canvas) {",
-              cell
-          )
-          cell, n_touch = re.subn(
+          cell = re.sub(
               r"public\s+boolean\s+onTouchEvent\s*\(\s*MotionEvent\s+event\s*\)\s*\{",
               "public boolean onTouchEvent(MotionEvent event) { if (org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event)) return true; ",
               cell
           )
-          print(f"Hooks applicati: onDraw={n_draw}, drawOutbounds={n_out}, dispatchDraw={n_disp}, onTouchEvent={n_touch}")
-          assert n_draw > 0 and n_touch > 0, "ERRORE: hook ChatMessageCell non riuscito!"
           open(cp, "w").write(cell)
-          EOF
-          python3 patch_wisby.py
+          '
           javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-36/android.jar TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
           rm -f TMessagesProj/src/main/java/org/telegram/messenger/*.class
-          echo "Verifica Java e Hook completata al 100%!"
-      - name: 5. Prepara Keystore e Compila APK Universale
+      - name: 6. Compila e Carica APK
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
@@ -258,7 +294,7 @@ jobs:
           printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
           ./gradlew :TMessagesProj_App:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj_App:assembleDebug --no-daemon --console=plain
-      - name: 6. Carica APK Universale
+      - name: 7. Carica APK Universale
         uses: actions/upload-artifact@v4
         with:
           name: WisbyGram-Universal-APK
