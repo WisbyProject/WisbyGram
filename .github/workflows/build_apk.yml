@@ -30,16 +30,6 @@ jobs:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
         run: |
-          python3 - << 'EOF'
-          import base64, zlib
-          b64 = (
-            "eJydV9tu2zgQfddX8IEXC2TrJrt92D7k0gR9KJAt2gR9KJAtS7RJi5RI"
-            "Sq7Tov99h5RkO7GdZg82NTwz58w5M+fQ6XTaIUVZltPpdC6K8n3x1j13"
-            "P39577qunM1mXdcV84U7d+fF23L+4e38vSvm83JWlB/K2dnZ2S9n78/e"
-            "/VpcXFxcnL1z5WLu/nDn5eL84uL9r+7s118X7uK34nxx5rpe0yN48aIo"
-            "i67r+q5clEVX9O6i7N1F1ZVlOS/Kvu+quSuquSuquSuquSuquSuquSuq"
-          )
-          EOF
           cat << 'EOF' > patch_all.py
           import os, re, json, glob
           for xf in glob.glob("**/res/values*/*.xml", recursive=True):
@@ -55,7 +45,7 @@ jobs:
               bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{ahash}";', bv)
               bv = re.sub(r'HUAWEI_APP_ID\s*=\s*[^;]+;', 'HUAWEI_APP_ID = "";', bv)
               open(bv_p, "w").write(bv)
-              pkgs = {"org.telegram.messenger", "org.telegram.messenger.beta", "org.telegram.messenger.web", "org.telegram.messenger.regular"}
+          pkgs = {"org.telegram.messenger", "org.telegram.messenger.beta", "org.telegram.messenger.web", "org.telegram.messenger.regular"}
           for gf in glob.glob("**/build.gradle", recursive=True):
               c = open(gf, "r", errors="ignore").read()
               for m in re.findall(r'org\.telegram\.[a-zA-Z0-9_.]+', c): pkgs.add(m)
@@ -131,7 +121,7 @@ jobs:
                 if (a == 1 && hasAny(v)) { float[] r = findB(v, dx, dy); if (dx >= r[0] && dx <= r[0]+r[2] && dy >= r[1] && dy <= r[1]+r[3]) { try { canc = true; long t = SystemClock.uptimeMillis(); MotionEvent ce = MotionEvent.obtain(t, t, 3, 0f, 0f, 0); v.dispatchTouchEvent(ce); ce.recycle(); } catch (Throwable ig) {} finally { canc = false; } return true; } }
               }
               return false;
-              }
+            }
             static void btn(final View v, final String k, final float[] r) {
               final Activity a = act(v.getContext()); if (a == null) return; final ViewGroup d = (ViewGroup)a.getWindow().getDecorView();
               View o = d.findViewWithTag("wb"); if (o != null) d.removeView(o);
@@ -180,7 +170,7 @@ jobs:
           '
           javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-36/android.jar TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
           rm -f TMessagesProj/src/main/java/org/telegram/messenger/*.class
-      - name: 5. Compila e Carica APK
+      - name: 5. Compila e Firma APK Pulito
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
@@ -197,11 +187,14 @@ jobs:
           sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
           printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
           chmod +x gradlew
-          ./gradlew :TMessagesProj_App:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj:assembleUniversalDebug --no-daemon --console=plain || ./gradlew :TMessagesProj_App:assembleDebug --no-daemon --console=plain
-      - name: 6. Carica APK Universale
+          ./gradlew :TMessagesProj_App:assembleAfatDebug --no-daemon --console=plain
+          RAW_APK=$(find . -name "*.apk" | head -n 1)
+          $ANDROID_HOME/build-tools/36.0.0/zipalign -p -f -v 4 "$RAW_APK" /tmp/aligned.apk
+          $ANDROID_HOME/build-tools/36.0.0/apksigner sign --ks /tmp/release.keystore --ks-key-alias alias_name --ks-pass pass:android --key-pass pass:android --v1-signing-enabled true --v2-signing-enabled true --out WisbyGram-Pronto.apk /tmp/aligned.apk
+      - name: 6. Carica APK Senza Compressione
         uses: actions/upload-artifact@v4
         with:
-          name: WisbyGram-Universal-APK
-          path: |
-            **/outputs/**/*.apk
+          name: WisbyGram-Pronto
+          path: WisbyGram-Pronto.apk
+          compression-level: 0
 # === FINE FILE ===
