@@ -27,13 +27,13 @@ jobs:
           path: |
             TMessagesProj/.cxx
             TMessagesProj/build/intermediates/cxx
-          key: wisby-cxx-arm64-v5
+          key: wisby-cxx-arm64-v6
       - name: 4. Installa Android SDK 36 e NDK 27
         run: |
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 5. Inietta Modifica Foto e Correggi XML di Telegram
+      - name: 5. Inietta Modifica Foto e Correzioni Telegram
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
@@ -41,12 +41,23 @@ jobs:
           cat << 'EOF' > patch_wisby.py
           import os, re, json, glob
 
-          # Correggi l'errore formatted="false" nei file XML di Telegram
+          # 1. Correggi attributo formatted="false" nei file XML
           for xf in glob.glob("**/res/values*/*.xml", recursive=True):
               x = open(xf, "r", errors="ignore").read()
               x2 = re.sub(r'<string\s+name="([^"]+)"\s*>', r'<string name="\1" formatted="false">', x)
               if x2 != x:
                   open(xf, "w").write(x2)
+
+          # 2. Correzione sicura di BuildVars.java per evitare errori di tipo int/String
+          aid = re.sub(r"[^0-9]", "", os.environ.get("APP_ID", "")) or "4"
+          ahash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", "")) or "014b35b6184100b085b0d0572f9b5103"
+          bv_p = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
+          if os.path.exists(bv_p):
+              bv = open(bv_p).read()
+              bv = re.sub(r"APP_ID\s*=\s*[^;]+;", f"APP_ID = {aid};", bv)
+              bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{ahash}";', bv)
+              bv = re.sub(r'HUAWEI_APP_ID\s*=\s*[^;]+;', 'HUAWEI_APP_ID = "";', bv)
+              open(bv_p, "w").write(bv)
 
           pkgs = {"org.telegram.messenger", "org.telegram.messenger.beta", "org.telegram.messenger.web", "org.telegram.messenger.regular", "org.telegram.messenger.standalone"}
           for gf in glob.glob("**/build.gradle", recursive=True):
@@ -59,17 +70,11 @@ jobs:
               c2 = c2.replace("'armeabi-v7a', 'arm64-v8a'", "'arm64-v8a'")
               c2 = c2.replace("'-DANDROID_STL=c++_static'", "'-DANDROID_STL=c++_static', '-DCMAKE_CXX_FLAGS=-g0', '-DCMAKE_C_FLAGS=-g0'")
               if c2 != c: open(gf, "w").write(c2)
+
           gs = {"project_info": {"project_number": "1234567890", "firebase_url": "https://telegram.firebaseio.com", "project_id": "telegram-mod", "storage_bucket": "telegram-mod.appspot.com"}, "client": [{"client_info": {"mobilesdk_app_id": f"1:1234567890:android:{1000+i}", "android_client_info": {"package_name": p}}, "api_key": [{"current_key": "AIzaSyDummyKeyForCompilationOnly123456"}]} for i, p in enumerate(sorted(pkgs))], "configuration_version": "1"}
           for d in glob.glob("TMessagesProj*"):
               if os.path.isdir(d): json.dump(gs, open(os.path.join(d, "google-services.json"), "w"))
-          aid = re.sub(r"[^0-9]", "", os.environ.get("APP_ID", ""))
-          ahash = re.sub(r"[^a-zA-Z0-9]", "", os.environ.get("APP_HASH", ""))
-          bv_p = "TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java"
-          if os.path.exists(bv_p) and aid and ahash:
-              bv = open(bv_p).read()
-              bv = re.sub(r"APP_ID\s*=\s*[^;]+;", f"APP_ID = {aid};", bv)
-              bv = re.sub(r'APP_HASH\s*=\s*"[^"]*";', f'APP_HASH = "{ahash}";', bv)
-              open(bv_p, "w").write(bv)
+
           java_lines = [
               'package org.telegram.messenger;',
               'import android.app.Activity; import android.app.AlertDialog; import android.app.Fragment;',
@@ -133,79 +138,5 @@ jobs:
               '    LinearLayout bar = new LinearLayout(a); int[] cols = new int[]{Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};',
               '    for (int i = 0; i < cols.length; i++) { final int col = cols[i]; Button b = new Button(a); b.setBackgroundColor(col); b.setLayoutParams(new LinearLayout.LayoutParams(0, 100, 1f)); b.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { p.setColor(col); } }); bar.addView(b); }',
               '    Button gb = new Button(a); gb.setText("Sostituisci con Foto dalla Galleria");',
-              '    gb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} } });',
-              '    root.addView(bar); root.addView(gb); root.addView(dv, new LinearLayout.LayoutParams(-1, 700));',
-              '    new AlertDialog.Builder(a).setTitle("Modifica Foto (Solo per te)").setView(root)',
-              '      .setPositiveButton("Salva", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { float[] r = bounds(cell); int rx = Math.max(0, Math.min((int)r[0], work.getWidth()-1)), ry = Math.max(0, Math.min((int)r[1], work.getHeight()-1)); int rw = Math.min((int)r[2], work.getWidth()-rx), rh = Math.min((int)r[3], work.getHeight()-ry); Bitmap cropped = (rw > 20 && rh > 20) ? Bitmap.createBitmap(work, rx, ry, rw, rh) : work; cache.put(k, cropped); empty.remove(k); try { FileOutputStream o = new FileOutputStream(file(a, k)); cropped.compress(Bitmap.CompressFormat.JPEG, 95, o); o.close(); } catch (Exception ignored) {} cell.invalidate(); } })',
-              '      .setNeutralButton("Ripristina", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { cache.remove(k); empty.put(k, Boolean.TRUE); file(a, k).delete(); cell.invalidate(); } })',
-              '      .setNegativeButton("Annulla", null).show();',
-              '  }',
-              '}'
-          ]
-          mgr_file = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
-          open(mgr_file, "w").write("\n".join(java_lines))
-          cp = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
-          cell = open(cp).read()
-          cell = re.sub(
-              r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{\s*(?=if\s*\(\s*currentMessageObject\s*==\s*null)",
-              "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {\n",
-              cell,
-              count=1
-          )
-          cell = re.sub(
-              r"public\s+boolean\s+onTouchEvent\s*\(\s*MotionEvent\s+event\s*\)\s*\{",
-              "public boolean onTouchEvent(MotionEvent event) { org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event); ",
-              cell
-          )
-          open(cp, "w").write(cell)
-          EOF
-          python3 patch_wisby.py
-          javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-36/android.jar TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
-          rm -f TMessagesProj/src/main/java/org/telegram/messenger/*.class
-          echo "Verifica Java e correzione XML superate al 100%!"
-      - name: 6. Prepara Keystore e Compila APK
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-        run: |
-          rm -f /tmp/release.keystore
-          keytool -genkey -v -keystore /tmp/release.keystore -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
-          for dir in . TMessagesProj TMessagesProj_App TMessagesProj_AppStandalone; do
-            if [ -d "$dir" ]; then
-              mkdir -p "$dir/config"
-              cp /tmp/release.keystore "$dir/config/release.keystore"
-              cp /tmp/release.keystore "$dir/config/debug.keystore"
-              cp /tmp/release.keystore "$dir/release.keystore"
-            fi
-          done
-          sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
-          printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
-          chmod +x gradlew
-          set +e
-          echo "1/2 Verifica rapida Java e Risorse XML (1 min)..."
-          ./gradlew :TMessagesProj_App:compileAfatDebugJavaWithJavac -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain > build.log 2>&1
-          STATUS=$?
-          if [ $STATUS -eq 0 ]; then
-            echo "Verifica Java e XML superata! 2/2 Compilazione C++ e creazione APK..."
-            ./gradlew :TMessagesProj_App:assembleAfatDebug -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain >> build.log 2>&1
-            STATUS=$?
-          fi
-          if [ $STATUS -ne 0 ]; then
-            echo "=== ERRORE ESATTO ==="
-            grep -E "FAILURE:|What went wrong|Execution failed|error:|Exception|> Could not" -A 8 build.log | tail -n 45
-            exit $STATUS
-          fi
-      - name: 7. Salva Cache C++ NDK
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            TMessagesProj/.cxx
-            TMessagesProj/build/intermediates/cxx
-          key: wisby-cxx-arm64-v5
-      - name: 8. Carica APK finito
-        uses: actions/upload-artifact@v4
-        with:
-          name: WisbyGram-APK
-          path: |
-            **/*.apk
-# === FINE FILE ===
+              '    gb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal");
+              
