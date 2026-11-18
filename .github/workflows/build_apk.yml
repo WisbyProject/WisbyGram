@@ -27,13 +27,13 @@ jobs:
           path: |
             TMessagesProj/.cxx
             TMessagesProj/build/intermediates/cxx
-          key: wisby-cxx-arm64-v3
+          key: wisby-cxx-arm64-v4
       - name: 4. Installa Android SDK 36 e NDK 27
         run: |
           sudo chmod -R 777 $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: 5. Inietta e Verifica Modifica Foto Locale (Zero Lambda)
+      - name: 5. Inietta e Verifica Modifica Foto Locale
         env:
           APP_ID: ${{ secrets.TG_APP_ID }}
           APP_HASH: ${{ secrets.TG_APP_HASH }}
@@ -45,8 +45,11 @@ jobs:
               c = open(gf, "r", errors="ignore").read()
               for m in re.findall(r'org\.telegram\.[a-zA-Z0-9_.]+', c):
                   pkgs.update([m, m + ".beta", m + ".web", m + ".regular"])
-              c2 = re.sub(r"abiFilters\s+[^\n\r;\}]+", "abiFilters 'arm64-v8a'", c)
-              c2 = c2.replace("-w", "-w -g0")
+              c2 = c.replace('"armeabi-v7a", "arm64-v8a", "x86", "x86_64"', '"arm64-v8a"')
+              c2 = c2.replace("'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'", "'arm64-v8a'")
+              c2 = c2.replace('"armeabi-v7a", "arm64-v8a"', '"arm64-v8a"')
+              c2 = c2.replace("'armeabi-v7a', 'arm64-v8a'", "'arm64-v8a'")
+              c2 = c2.replace("'-DANDROID_STL=c++_static'", "'-DANDROID_STL=c++_static', '-DCMAKE_CXX_FLAGS=-g0', '-DCMAKE_C_FLAGS=-g0'")
               if c2 != c: open(gf, "w").write(c2)
           gs = {"project_info": {"project_number": "1234567890", "firebase_url": "https://telegram.firebaseio.com", "project_id": "telegram-mod", "storage_bucket": "telegram-mod.appspot.com"}, "client": [{"client_info": {"mobilesdk_app_id": f"1:1234567890:android:{1000+i}", "android_client_info": {"package_name": p}}, "api_key": [{"current_key": "AIzaSyDummyKeyForCompilationOnly123456"}]} for i, p in enumerate(sorted(pkgs))], "configuration_version": "1"}
           for d in glob.glob("TMessagesProj*"):
@@ -111,6 +114,94 @@ jobs:
               '    public Bitmap target; public View view;',
               '    public void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("image/*"); startActivityForResult(Intent.createChooser(i, "Scegli Foto"), 9992); }',
               '    @Override public void onActivityResult(int req, int res, Intent d) { if (req == 9992 && res == Activity.RESULT_OK && d != null && d.getData() != null && getActivity() != null) { try { InputStream s = getActivity().getContentResolver().openInputStream(d.getData()); Bitmap p = BitmapFactory.decodeStream(s); if (s != null) s.close(); if (p != null && target != null) { new Canvas(target).drawBitmap(p, null, new Rect(0, 0, target.getWidth(), target.getHeight()), null); if (view != null) view.invalidate(); } } catch (Exception ignored) {} } }',
+              '  }',
+              '  private static void openEditor(final Activity a, final View cell, final String k) {',
+              '    final Bitmap work = Bitmap.createBitmap(Math.max(300, cell.getWidth()), Math.max(300, cell.getHeight()), Bitmap.Config.ARGB_8888);',
+              '    final Canvas sc = new Canvas(work); cell.draw(sc);',
+              '    final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(Color.RED); p.setStrokeWidth(18f); p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND);',
+              '    final View dv = new View(a) { float lx, ly; @Override protected void onDraw(Canvas c) { c.drawBitmap(work, null, new Rect(0, 0, getWidth(), getHeight()), null); }',
+              '      @Override public boolean onTouchEvent(MotionEvent ev) { float x = ev.getX() * work.getWidth() / Math.max(1, getWidth()), y = ev.getY() * work.getHeight() / Math.max(1, getHeight()); if (ev.getAction() == MotionEvent.ACTION_DOWN) { lx = x; ly = y; sc.drawPoint(x, y, p); invalidate(); return true; } else if (ev.getAction() == MotionEvent.ACTION_MOVE) { sc.drawLine(lx, ly, x, y, p); lx = x; ly = y; invalidate(); return true; } return true; } };',
+              '    LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL);',
+              '    LinearLayout bar = new LinearLayout(a); int[] cols = new int[]{Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.WHITE, Color.BLACK};',
+              '    for (int i = 0; i < cols.length; i++) { final int col = cols[i]; Button b = new Button(a); b.setBackgroundColor(col); b.setLayoutParams(new LinearLayout.LayoutParams(0, 100, 1f)); b.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { p.setColor(col); } }); bar.addView(b); }',
+              '    Button gb = new Button(a); gb.setText("Sostituisci con Foto dalla Galleria");',
+              '    gb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View z) { try { GalFrag f = (GalFrag) a.getFragmentManager().findFragmentByTag("w_gal"); if (f == null) { f = new GalFrag(); a.getFragmentManager().beginTransaction().add(f, "w_gal").commitAllowingStateLoss(); a.getFragmentManager().executePendingTransactions(); } f.target = work; f.view = dv; f.pick(); } catch (Exception ignored) {} } });',
+              '    root.addView(bar); root.addView(gb); root.addView(dv, new LinearLayout.LayoutParams(-1, 700));',
+              '    new AlertDialog.Builder(a).setTitle("Modifica Foto (Solo per te)").setView(root)',
+              '      .setPositiveButton("Salva", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { float[] r = bounds(cell); int rx = Math.max(0, Math.min((int)r[0], work.getWidth()-1)), ry = Math.max(0, Math.min((int)r[1], work.getHeight()-1)); int rw = Math.min((int)r[2], work.getWidth()-rx), rh = Math.min((int)r[3], work.getHeight()-ry); Bitmap cropped = (rw > 20 && rh > 20) ? Bitmap.createBitmap(work, rx, ry, rw, rh) : work; cache.put(k, cropped); empty.remove(k); try { FileOutputStream o = new FileOutputStream(file(a, k)); cropped.compress(Bitmap.CompressFormat.JPEG, 95, o); o.close(); } catch (Exception ignored) {} cell.invalidate(); } })',
+              '      .setNeutralButton("Ripristina", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) { cache.remove(k); empty.put(k, Boolean.TRUE); file(a, k).delete(); cell.invalidate(); } })',
+              '      .setNegativeButton("Annulla", null).show();',
+              '  }',
+              '}'
+          ]
+          mgr_file = "TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java"
+          open(mgr_file, "w").write("\n".join(java_lines))
+          cp = "TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java"
+          cell = open(cp).read()
+          cell = re.sub(
+              r"protected\s+void\s+onDraw\s*\(\s*Canvas\s+canvas\s*\)\s*\{\s*(?=if\s*\(\s*currentMessageObject\s*==\s*null)",
+              "protected void onDraw(Canvas canvas) { onDrawWisby(canvas); org.telegram.messenger.LocalPhotoOverrideManager.onCellDraw(this, canvas); } private void onDrawWisby(Canvas canvas) {\n",
+              cell,
+              count=1
+          )
+          cell = re.sub(
+              r"public\s+boolean\s+onTouchEvent\s*\(\s*MotionEvent\s+event\s*\)\s*\{",
+              "public boolean onTouchEvent(MotionEvent event) { org.telegram.messenger.LocalPhotoOverrideManager.onCellTouch(this, event); ",
+              cell
+          )
+          open(cp, "w").write(cell)
+          EOF
+          python3 patch_wisby.py
+          javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-36/android.jar TMessagesProj/src/main/java/org/telegram/messenger/LocalPhotoOverrideManager.java
+          rm -f TMessagesProj/src/main/java/org/telegram/messenger/*.class
+          echo "Verifica Java superata al 100%!"
+      - name: 6. Prepara Keystore e Compila APK
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          rm -f /tmp/release.keystore
+          keytool -genkey -v -keystore /tmp/release.keystore -alias alias_name -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=WisbyGram, OU=Dev, O=Wisby, L=Rome, S=IT, C=IT"
+          for dir in . TMessagesProj TMessagesProj_App TMessagesProj_AppStandalone; do
+            if [ -d "$dir" ]; then
+              mkdir -p "$dir/config"
+              cp /tmp/release.keystore "$dir/config/release.keystore"
+              cp /tmp/release.keystore "$dir/config/debug.keystore"
+              cp /tmp/release.keystore "$dir/release.keystore"
+            fi
+          done
+          sed -i '/RELEASE_KEY_PASSWORD/d;/RELEASE_KEY_ALIAS/d;/RELEASE_STORE_PASSWORD/d;/org.gradle.jvmargs/d' gradle.properties || true
+          printf "\nRELEASE_KEY_PASSWORD=android\nRELEASE_KEY_ALIAS=alias_name\nRELEASE_STORE_PASSWORD=android\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n" >> gradle.properties
+          chmod +x gradlew
+          set +e
+          echo "1/2 Verifica rapida Java e Risorse (1 min)..."
+          ./gradlew :TMessagesProj_App:compileAfatDebugJavaWithJavac -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain > build.log 2>&1
+          STATUS=$?
+          if [ $STATUS -eq 0 ]; then
+            echo "Verifica Java di Telegram superata! 2/2 Compilazione C++ e creazione APK..."
+            ./gradlew :TMessagesProj_App:assembleAfatDebug -PRELEASE_KEY_PASSWORD=android -PRELEASE_KEY_ALIAS=alias_name -PRELEASE_STORE_PASSWORD=android --no-daemon --console=plain >> build.log 2>&1
+            STATUS=$?
+          fi
+          if [ $STATUS -ne 0 ]; then
+            echo "=== ERRORE ESATTO ==="
+            grep -E "FAILURE:|What went wrong|Execution failed|error:|Exception|> Could not" -A 8 build.log | tail -n 45
+            exit $STATUS
+          fi
+      - name: 7. Salva Cache C++ NDK
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            TMessagesProj/.cxx
+            TMessagesProj/build/intermediates/cxx
+          key: wisby-cxx-arm64-v4
+      - name: 8. Carica APK finito
+        uses: actions/upload-artifact@v4
+        with:
+          name: WisbyGram-APK
+          path: |
+            **/*.apk
+# === FINE FILE ===
+decodeStream(s); if (s != null) s.close(); if (p != null && target != null) { new Canvas(target).drawBitmap(p, null, new Rect(0, 0, target.getWidth(), target.getHeight()), null); if (view != null) view.invalidate(); } } catch (Exception ignored) {} } }',
               '  }',
               '  private static void openEditor(final Activity a, final View cell, final String k) {',
               '    final Bitmap work = Bitmap.createBitmap(Math.max(300, cell.getWidth()), Math.max(300, cell.getHeight()), Bitmap.Config.ARGB_8888);',
